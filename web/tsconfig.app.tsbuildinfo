@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/components/analysispanel.tsx","./src/components/chatwindow.tsx","./src/components/jevlogpanel.tsx","./src/components/jevsetupmodal.tsx","./src/components/memorypanel.tsx","./src/components/messagebubble.tsx","./src/components/replypanel.tsx","./src/components/settingsdrawer.tsx"],"version":"5.9.3"}
