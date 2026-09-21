@@ -49,7 +49,18 @@ export function ReplyPanel({
   const copy = async () => {
     if (!currentText) return
     try {
-      await navigator.clipboard.writeText(currentText)
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(currentText)
+      } else {
+        const textarea = document.createElement('textarea')
+        textarea.value = currentText
+        textarea.style.position = 'fixed'
+        textarea.style.opacity = '0'
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      }
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     } catch {
