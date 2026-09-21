@@ -70,6 +70,7 @@ export function JevSetupModal({ open, credentials, onClose, onSave }: JevSetupMo
             value={apiKey}
             onChange={(event) => setApiKey(event.target.value)}
             onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return
               if (event.key === 'Enter') void save()
             }}
           />
