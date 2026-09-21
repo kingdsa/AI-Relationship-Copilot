@@ -775,6 +775,18 @@ body {
   font-size: 12px;
 }
 
+.github-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+  line-height: 1;
+}
+
+.github-link svg {
+  flex-shrink: 0;
+}
+
 .icon-btn {
   border: none;
   background: transparent;

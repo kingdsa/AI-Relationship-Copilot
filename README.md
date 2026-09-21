@@ -135,3 +135,7 @@ observe() / getScreenshot() / extractMessages() / findInput() / typeText() / cli
 - 第一阶段（Manual）：**所有回复必须由你确认后发送**，不会自动发送。
 - `JEV confidence < 0.7` 或涉及敏感话题时，界面会给出风险提示，仅生成建议。
 - 后续扩展方向：Semi-Auto（自动填入输入框）、Auto（自动发送 + 频率限制 + 人工接管）等（PRD §29/§30）。
+
+## 9. 友情链接
+
+- [LINUX DO](https://linux.do/) — 新的理想型社区
