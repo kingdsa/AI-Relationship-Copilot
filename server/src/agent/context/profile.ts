@@ -1,12 +1,19 @@
 import type { CommunicationStyle, RelationshipMemory } from '../../types/index.js'
+import {
+  COMMUNICATION_STRATEGIES,
+  DEFAULT_COMMUNICATION_STRATEGY,
+  type CommunicationStrategyType,
+} from '../../types/strategy.js'
 
 /**
- * 使用者画像（沟通风格 + 关系记忆）由前端 localStorage 持有，
+ * 使用者画像（沟通风格 + 沟通策略 + 关系记忆）由前端 localStorage 持有，
  * 随每个请求传入；服务端不保存，只做校验、补默认值与合并。
  */
 export interface UserProfile {
   userCommunicationStyle: CommunicationStyle
   otherCommunicationStyle: CommunicationStyle
+  /** 使用者手动选择的沟通策略（暖心男友/普通朋友/嫉恶如仇/忍无可忍） */
+  communicationStrategy: CommunicationStrategyType
   relationshipMemory: RelationshipMemory
 }
 
@@ -44,6 +51,7 @@ export function defaultRelationshipMemory(): RelationshipMemory {
 export const defaultProfile = (): UserProfile => ({
   userCommunicationStyle: defaultUserStyle,
   otherCommunicationStyle: defaultOtherStyle,
+  communicationStrategy: DEFAULT_COMMUNICATION_STRATEGY,
   relationshipMemory: defaultRelationshipMemory(),
 })
 
@@ -101,6 +109,11 @@ export function sanitizeProfile(input: unknown): UserProfile {
   return {
     userCommunicationStyle: sanitizeStyle(raw.userCommunicationStyle, defaultUserStyle),
     otherCommunicationStyle: sanitizeStyle(raw.otherCommunicationStyle, defaultOtherStyle),
+    communicationStrategy: readEnum(
+      raw.communicationStrategy,
+      COMMUNICATION_STRATEGIES,
+      DEFAULT_COMMUNICATION_STRATEGY,
+    ),
     relationshipMemory: sanitizeMemory(raw.relationshipMemory),
   }
 }

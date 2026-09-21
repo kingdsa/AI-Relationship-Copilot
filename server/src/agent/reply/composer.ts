@@ -1,6 +1,6 @@
 import type { ConversationContext } from '../../types/index.js'
 import type { EmotionAnalysis } from '../../types/emotion.js'
-import type { ReplyStrategy, ReplyStrategyType } from '../../types/strategy.js'
+import type { CommunicationStrategyType, ReplyStrategy, ReplyStrategyType } from '../../types/strategy.js'
 import type { ReplySuggestion } from '../../types/reply.js'
 
 interface ComposerInput {
@@ -114,6 +114,150 @@ const CLOSERS: Record<string, string[]> = {
 
 const EMPTY_FALLBACK = '嗯嗯，我在听'
 
+type Polarity = 'negative' | 'positive' | 'neutral'
+type CloserGroup = 'solution' | 'emotion' | 'default'
+
+interface ModeVoice {
+  openers: Record<Polarity, string[]>
+  cores: Partial<Record<ReplyStrategyType, string[]>> & { default: string[] }
+  closers: Record<CloserGroup, string[]>
+}
+
+const POSITIVE_EMOTIONS = new Set(['开心', '兴奋', '期待', '暧昧', '害羞', '撒娇', '平静'])
+const NEGATIVE_EMOTIONS = new Set([
+  '委屈',
+  '失望',
+  '难过',
+  '生气',
+  '焦虑',
+  '冷淡',
+  '烦躁',
+  '无奈',
+  '疲惫',
+])
+const SOLUTION_INTENTS = new Set(['希望解决问题', '寻求建议', '询问问题', '希望解释'])
+const EMOTION_INTENTS = new Set([
+  '希望陪伴',
+  '寻求关注',
+  '寻求安慰',
+  '表达不满',
+  '撒娇',
+  '试探',
+  '道歉',
+])
+
+/** 普通朋友：自然、礼貌、有分寸，不暧昧也不冷淡 */
+const FRIEND_VOICE: ModeVoice = {
+  openers: {
+    negative: ['怎么了？', '听着是有点不顺', '还好吧？'],
+    positive: ['可以啊', '不错呀', '挺好的'],
+    neutral: ['嗯嗯', '在的', '收到'],
+  },
+  cores: {
+    comfort: ['要不你说说，我帮你参谋参谋', '别自己憋着，聊聊呗'],
+    care: ['你先说说，我听着呢', '需要我帮什么忙就说'],
+    apology: ['行，这次算我疏忽了', '是我没考虑周到，下次注意'],
+    explanation: ['我给你说下当时的情况', '不是你想的那样，我解释一下'],
+    question: ['你具体怎么想的？', '你打算怎么办？'],
+    reassurance: ['放心，这事我记着呢', '答应你的事我肯定办'],
+    default: ['行，听你的', '那我按你说的来', '嗯嗯，知道了'],
+  },
+  closers: {
+    solution: ['需要我搭把手就说一声', '有事随时找我'],
+    emotion: ['想说就说说，我听着', '先别想太多，顾好自己'],
+    default: ['那先这样？', '回头再聊', '好，就这样'],
+  },
+}
+
+/** 嫉恶如仇：冷淡、有界限、不讨好，对讨厌的人点破问题 */
+const HOSTILE_VOICE: ModeVoice = {
+  openers: {
+    negative: ['又来这套？', '有话直说吧', '你这样，我就直说了'],
+    positive: ['哦，是吗', '行吧'],
+    neutral: ['说事吧', '有事说事'],
+  },
+  cores: {
+    comfort: ['这个我共情不了', '这事我不想接'],
+    apology: ['别，这话我受不起', '道歉就不必了，我记性好'],
+    explanation: ['不用解释，你的意思我明白', '解释就免了，我看的是行为'],
+    question: ['你自己觉得这样说得过去？', '你觉得合适吗？'],
+    default: ['不用绕，直接说', '我知道你什么意思', '就这样吧，没什么好聊的'],
+  },
+  closers: {
+    solution: ['你自己看着办', '别把我算进去', '这事我不参与'],
+    emotion: ['行，我收到了', '明白了'],
+    default: ['就这样', '不聊了', '到这儿吧'],
+  },
+}
+
+/** 忍无可忍：把不满和底线直接说出来，语气严厉但不辱骂 */
+const ANGRY_VOICE: ModeVoice = {
+  openers: {
+    negative: ['我真是受够了', '这话我忍很久了', '你能不能讲点道理'],
+    positive: ['随你吧，我懒得管了', '行，你开心就好'],
+    neutral: ['我现在没心情跟你绕', '那今天就把话说清楚'],
+  },
+  cores: {
+    comfort: ['别指望我再哄你', '这次我不打算惯着了'],
+    apology: ['该道歉的是你吧', '你先想想自己做了什么'],
+    explanation: ['我不解释了，解释多少次都一样', '该说的我早说过了'],
+    question: ['你扪心自问一下，这样合适吗？', '你到底想怎么样？'],
+    default: ['别再来这一套了', '这是我的底线，你听清楚', '我话就说到这儿'],
+  },
+  closers: {
+    solution: ['你自己想清楚再来找我', '这事必须有个说法'],
+    emotion: ['我不想再说了', '你冷静完再说吧'],
+    default: ['就这样', '我不奉陪了', '先这样吧'],
+  },
+}
+
+const MODE_VOICES: Partial<Record<CommunicationStrategyType, ModeVoice>> = {
+  normal_friend: FRIEND_VOICE,
+  righteous_anger: HOSTILE_VOICE,
+  no_more_patience: ANGRY_VOICE,
+}
+
+function polarityOf(emotion: string): Polarity {
+  if (NEGATIVE_EMOTIONS.has(emotion)) return 'negative'
+  if (POSITIVE_EMOTIONS.has(emotion)) return 'positive'
+  return 'neutral'
+}
+
+function closerGroupOf(intent: string): CloserGroup {
+  if (SOLUTION_INTENTS.has(intent)) return 'solution'
+  if (EMOTION_INTENTS.has(intent)) return 'emotion'
+  return 'default'
+}
+
+interface VoicePools {
+  openers: string[]
+  cores: string[]
+  closers: string[]
+  /** 是否允许"～"这类软化装饰 */
+  soft: boolean
+}
+
+function pickPools(
+  strategy: ReplyStrategy,
+  emotion: EmotionAnalysis,
+): VoicePools {
+  const voice = MODE_VOICES[strategy.communicationStrategy]
+  if (!voice) {
+    return {
+      openers: OPENERS[emotion.emotion] ?? OPENERS.平静,
+      cores: CORES[strategy.primary] ?? CORES.normal_reply,
+      closers: CLOSERS[emotion.intent] ?? CLOSERS.主动分享,
+      soft: true,
+    }
+  }
+  return {
+    openers: voice.openers[polarityOf(emotion.emotion)],
+    cores: voice.cores[strategy.primary] ?? voice.cores.default,
+    closers: voice.closers[closerGroupOf(emotion.intent)],
+    soft: false,
+  }
+}
+
 function rotate<T>(items: T[], offset: number): T[] {
   if (items.length === 0) return items
   const index = ((offset % items.length) + items.length) % items.length
@@ -132,9 +276,12 @@ function decoration(emojiUsage: string, variant: number): string {
 }
 
 function joinParts(parts: string[], style: string): string {
-  const filtered = parts.filter(Boolean)
+  const filtered = parts.map((part) => part.trim()).filter(Boolean)
   if (filtered.length === 0) return EMPTY_FALLBACK
-  const joined = filtered.join('，')
+  const joined = filtered.reduce((acc, part) => {
+    if (!acc) return part
+    return /[。！？～]$/.test(acc) ? `${acc}${part}` : `${acc}，${part}`
+  }, '')
   const chars = joined.replace(/[，。！？～\s]/g, '').length
   if (style === 'short' && chars > 46 && filtered.length > 1) {
     return `${filtered[0]}。`
@@ -152,14 +299,13 @@ function joinParts(parts: string[], style: string): string {
  */
 export function composeReplies(input: ComposerInput): ReplySuggestion[] {
   const { emotion, strategy, context, variant } = input
-  const openerPool = OPENERS[emotion.emotion] ?? OPENERS.平静
-  const corePool = CORES[strategy.primary] ?? CORES.normal_reply
-  const closerPool = CLOSERS[emotion.intent] ?? CLOSERS.主动分享
+  const pools = pickPools(strategy, emotion)
+  const closerPool = pools.closers
   const style = context.userCommunicationStyle.messageLength
-  const emoji = context.userCommunicationStyle.emojiUsage
+  const emoji = pools.soft ? context.userCommunicationStyle.emojiUsage : 'low'
 
-  const openers = rotate(openerPool, variant * 2)
-  const cores = rotate(corePool, variant)
+  const openers = rotate(pools.openers, variant * 2)
+  const cores = rotate(pools.cores, variant)
   const closers = rotate(closerPool, variant * 3)
 
   const drafts: string[] = [
@@ -177,9 +323,9 @@ export function composeReplies(input: ComposerInput): ReplySuggestion[] {
 
   return unique.slice(0, input.count).map((content, index) => {
     const base = content.replace(/[。～]+$/, '')
-    const suffix = decoration(emoji, index + variant)
+    const suffix = decoration(emoji, index + variant) || (/[！？]$/.test(base) ? '' : '。')
     return {
-      content: base ? `${base}${suffix || '。'}` : EMPTY_FALLBACK,
+      content: base ? `${base}${suffix}` : EMPTY_FALLBACK,
       strategy: [...strategy.directives.slice(0, 3), ...strategy.avoid.slice(0, 2)],
       confidence: Math.max(0.35, Math.min(0.8, strategy.confidence - index * 0.08)),
       source: 'composer' as const,

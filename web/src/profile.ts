@@ -1,13 +1,21 @@
-import type { CommunicationStyle, HistoryRecord, RelationshipMemory } from './types'
+import {
+  COMMUNICATION_STRATEGIES,
+  DEFAULT_COMMUNICATION_STRATEGY,
+  type CommunicationStrategyType,
+  type CommunicationStyle,
+  type HistoryRecord,
+  type RelationshipMemory,
+} from './types'
 
 /**
- * 使用者画像：沟通风格 + 关系记忆 + 情绪时间线/分析历史。
+ * 使用者画像：沟通风格 + 沟通策略 + 关系记忆 + 情绪时间线/分析历史。
  * 全部保存在使用者自己的浏览器 localStorage，随请求发给服务端计算，
  * 服务端不保存；多人共用同一部署时互不影响。
  */
 export interface LocalProfile {
   userCommunicationStyle: CommunicationStyle
   otherCommunicationStyle: CommunicationStyle
+  communicationStrategy: CommunicationStrategyType
   autoAnalyze: boolean
   relationshipMemory: RelationshipMemory
   history: HistoryRecord[]
@@ -16,6 +24,7 @@ export interface LocalProfile {
 export interface ProfileRequest {
   userCommunicationStyle: CommunicationStyle
   otherCommunicationStyle: CommunicationStyle
+  communicationStrategy: CommunicationStrategyType
   relationshipMemory: RelationshipMemory
 }
 
@@ -58,6 +67,7 @@ export function defaultProfile(): LocalProfile {
   return {
     userCommunicationStyle: defaultUserStyle,
     otherCommunicationStyle: defaultOtherStyle,
+    communicationStrategy: DEFAULT_COMMUNICATION_STRATEGY,
     autoAnalyze: true,
     relationshipMemory: defaultMemory(),
     history: [],
@@ -141,6 +151,11 @@ export function loadProfile(): LocalProfile {
     return {
       userCommunicationStyle: readStyle(parsed.userCommunicationStyle, defaultUserStyle),
       otherCommunicationStyle: readStyle(parsed.otherCommunicationStyle, defaultOtherStyle),
+      communicationStrategy: readEnum(
+        parsed.communicationStrategy,
+        COMMUNICATION_STRATEGIES,
+        DEFAULT_COMMUNICATION_STRATEGY,
+      ),
       autoAnalyze: parsed.autoAnalyze !== false,
       relationshipMemory: readMemory(parsed.relationshipMemory),
       history: readHistory(parsed.history),
@@ -163,6 +178,7 @@ export function profileRequest(profile: LocalProfile): ProfileRequest {
   return {
     userCommunicationStyle: profile.userCommunicationStyle,
     otherCommunicationStyle: profile.otherCommunicationStyle,
+    communicationStrategy: profile.communicationStrategy,
     relationshipMemory: profile.relationshipMemory,
   }
 }

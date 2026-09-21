@@ -1,4 +1,9 @@
-import type { AnalyzeResponse } from '../types'
+import type { AnalyzeResponse, CommunicationStrategyType } from '../types'
+import {
+  COMMUNICATION_STRATEGIES,
+  COMMUNICATION_STRATEGY_HINTS,
+  COMMUNICATION_STRATEGY_LABELS,
+} from '../types'
 
 const EMOTION_EMOJI: Record<string, string> = {
   开心: '😊',
@@ -40,9 +45,20 @@ interface AnalysisPanelProps {
   loading: boolean
   onAnalyze: () => void
   canAnalyze: boolean
+  communicationStrategy: CommunicationStrategyType
+  onCommunicationStrategyChange: (value: CommunicationStrategyType) => void
+  strategySwitchDisabled: boolean
 }
 
-export function AnalysisPanel({ analysis, loading, onAnalyze, canAnalyze }: AnalysisPanelProps) {
+export function AnalysisPanel({
+  analysis,
+  loading,
+  onAnalyze,
+  canAnalyze,
+  communicationStrategy,
+  onCommunicationStrategyChange,
+  strategySwitchDisabled,
+}: AnalysisPanelProps) {
   return (
     <section className="card">
       <header className="card-header">
@@ -53,6 +69,31 @@ export function AnalysisPanel({ analysis, loading, onAnalyze, canAnalyze }: Anal
           </span>
         )}
       </header>
+
+      <div className="strategy-picker">
+        <div className="strategy-picker-head">
+          <span className="strategy-picker-title">沟通策略</span>
+          <span className="strategy-picker-hint">
+            {COMMUNICATION_STRATEGY_HINTS[communicationStrategy]}
+          </span>
+        </div>
+        <div className="strategy-segments" role="group" aria-label="沟通策略">
+          {COMMUNICATION_STRATEGIES.map((key) => (
+            <button
+              key={key}
+              type="button"
+              className={`strategy-segment ${key === communicationStrategy ? 'active' : ''} ${
+                key === 'righteous_anger' || key === 'no_more_patience' ? 'tough' : ''
+              }`}
+              onClick={() => onCommunicationStrategyChange(key)}
+              disabled={strategySwitchDisabled}
+              title={COMMUNICATION_STRATEGY_HINTS[key]}
+            >
+              {COMMUNICATION_STRATEGY_LABELS[key]}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {!analysis && !loading && (
         <div className="card-empty">
@@ -150,7 +191,8 @@ export function AnalysisPanel({ analysis, loading, onAnalyze, canAnalyze }: Anal
 
           <div className="strategy">
             <h3>
-              沟通策略：<strong>{analysis.strategy.primaryLabel}</strong>
+              沟通策略：<strong>{COMMUNICATION_STRATEGY_LABELS[communicationStrategy]}</strong>
+              <span className="strategy-sub">自动切入方式：{analysis.strategy.primaryLabel}</span>
             </h3>
             <ul className="strategy-list">
               {analysis.strategy.directives.map((item) => (

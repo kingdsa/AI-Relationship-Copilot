@@ -1,6 +1,7 @@
 import type { ConversationContext } from '../../types/index.js'
 import type { EmotionAnalysis } from '../../types/emotion.js'
 import type { ReplyStrategy } from '../../types/strategy.js'
+import { COMMUNICATION_STRATEGY_GUIDES } from '../../types/strategy.js'
 
 /**
  * PRD §18 核心 System Prompt。
@@ -25,6 +26,7 @@ export const REPLY_SYSTEM_PROMPT = `你是一个恋爱关系聊天辅助 AI。
 
 你收到的输入已经包含 JEV（决策模型）对情绪、意图、关系状态和回复策略的结构化判断，你要做的是：
 - 尊重 JEV 的策略判断，把它翻译成自然、真诚的中文回复
+- 严格遵循「沟通策略（人设）」：用户手动选择了以什么身份/态度回复（暖心男友 / 普通朋友 / 嫉恶如仇 / 忍无可忍），语气、用词、亲密程度都以人设为准；人设与 JEV 策略冲突时，以人设为准（例如"忍无可忍"时不要温柔安抚）
 - 让回复像是"用户本人"说出来的，而不是客服或情感博主
 - 避免说教、避免长篇大论、避免模板腔
 - 不要假装确定，不确定时用更温和的表达
@@ -78,6 +80,19 @@ export function buildMessagesTranscript(context: ConversationContext): string {
   return lines.join('\n')
 }
 
+export function buildCommunicationStrategySection(strategy: ReplyStrategy): string {
+  const guide = COMMUNICATION_STRATEGY_GUIDES[strategy.communicationStrategy]
+  return [
+    `# 沟通策略（人设）：${guide.label}`,
+    guide.tone,
+    '这个口径下要做到：',
+    ...guide.directives.map((item) => `- ${item}`),
+    '这个口径下要避免：',
+    ...guide.avoid.map((item) => `- ${item}`),
+    '措辞尺度：可以有立场和火气，但不要辱骂、不要人身攻击、不要威胁。',
+  ].join('\n')
+}
+
 export function buildReplyUserPrompt(
   context: ConversationContext,
   emotion: EmotionAnalysis,
@@ -101,10 +116,13 @@ export function buildReplyUserPrompt(
           strategy.avoid.map((a) => `注意：${a}`),
         ),
         primary_strategy: strategy.primary,
+        communication_strategy: strategy.communicationStrategy,
       },
       null,
       2,
     ),
+    '',
+    buildCommunicationStrategySection(strategy),
     '',
     '# 用户画像与关系记忆',
     buildContextForModel(context),

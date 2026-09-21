@@ -1,5 +1,31 @@
 import type { Credentials } from './credentials'
 
+/** 沟通策略（人设口径）：使用者手动选择，决定回复的整体语气与立场 */
+export const COMMUNICATION_STRATEGIES = [
+  'warm_boyfriend',
+  'normal_friend',
+  'righteous_anger',
+  'no_more_patience',
+] as const
+
+export type CommunicationStrategyType = (typeof COMMUNICATION_STRATEGIES)[number]
+
+export const DEFAULT_COMMUNICATION_STRATEGY: CommunicationStrategyType = 'warm_boyfriend'
+
+export const COMMUNICATION_STRATEGY_LABELS: Record<CommunicationStrategyType, string> = {
+  warm_boyfriend: '暖心男友',
+  normal_friend: '普通朋友',
+  righteous_anger: '嫉恶如仇',
+  no_more_patience: '忍无可忍',
+}
+
+export const COMMUNICATION_STRATEGY_HINTS: Record<CommunicationStrategyType, string> = {
+  warm_boyfriend: '以男朋友的身份：温柔、在乎、主动关心，先接住情绪',
+  normal_friend: '以普通朋友的身份：自然、礼貌、有分寸，不暧昧也不冷淡',
+  righteous_anger: '对讨厌的人：冷淡、有界限、点破问题，不讨好',
+  no_more_patience: '已经忍到极限：把不满和底线直接说出来，语气严厉',
+}
+
 export interface Attachment {
   id: string
   type: 'image' | 'emoji' | 'file' | 'link'
@@ -33,6 +59,8 @@ export interface EmotionAnalysis {
 export interface ReplyStrategyView {
   primary: string
   primaryLabel: string
+  communicationStrategy: CommunicationStrategyType
+  communicationStrategyLabel: string
   directives: string[]
   avoid: string[]
   confidence: number

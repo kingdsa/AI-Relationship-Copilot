@@ -27,12 +27,14 @@ import { SettingsDrawer } from './components/SettingsDrawer'
 import type {
   AnalyzeResponse,
   Attachment,
+  CommunicationStrategyType,
   Message,
   ObserveResponse,
   ReplyResponse,
   SendResponse,
   SettingsSavePayload,
 } from './types'
+import { COMMUNICATION_STRATEGY_LABELS } from './types'
 
 const STORAGE_KEY = 'ai-relationship-copilot.messages.v1'
 
@@ -147,6 +149,7 @@ export default function App() {
           profileRequest(profileRef.current),
         )
         setReplyData(replyResult)
+        setAnalysis(replyResult)
         setEdits(replyResult.replies.map((reply) => reply.content))
         setSelectedReplyIndex(0)
         setVariant(nextVariant)
@@ -194,6 +197,19 @@ export default function App() {
     if (messages.length === 0) return
     void runPipeline(messages)
   }, [messages, runPipeline])
+
+  /** 切换沟通策略：持久化到本机画像；已有回复时按新口径重新生成 */
+  const handleCommunicationStrategyChange = useCallback(
+    (next: CommunicationStrategyType) => {
+      if (next === profileRef.current.communicationStrategy) return
+      commitProfile((current) => ({ ...current, communicationStrategy: next }))
+      showToast(`沟通策略已切换为「${COMMUNICATION_STRATEGY_LABELS[next]}」`)
+      if (messages.length > 0 && replyData) {
+        void runPipeline(messages, { regenerate: true, nextVariant: variant + 1 })
+      }
+    },
+    [commitProfile, messages, replyData, runPipeline, showToast, variant],
+  )
 
   const handleRegenerate = useCallback(() => {
     if (messages.length === 0) return
@@ -382,6 +398,9 @@ export default function App() {
             loading={analyzing}
             onAnalyze={handleAnalyze}
             canAnalyze={messages.length > 0}
+            communicationStrategy={profile.communicationStrategy}
+            onCommunicationStrategyChange={handleCommunicationStrategyChange}
+            strategySwitchDisabled={thinking}
           />
           <ReplyPanel
             replies={replyData?.replies ?? []}

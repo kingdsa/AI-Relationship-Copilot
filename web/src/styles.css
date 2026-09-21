@@ -589,10 +589,86 @@ body {
 }
 
 /* ---------- strategy ---------- */
+.strategy-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.strategy-picker-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.strategy-picker-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-soft);
+}
+
+.strategy-picker-hint {
+  font-size: 12px;
+  color: var(--text-faint);
+  line-height: 1.5;
+}
+
+.strategy-segments {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.strategy-segment {
+  border: 1px solid var(--border);
+  background: white;
+  border-radius: 10px;
+  padding: 7px 4px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text-soft);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.strategy-segment:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary-dark);
+}
+
+.strategy-segment.active {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary-dark);
+  font-weight: 600;
+}
+
+.strategy-segment.tough.active {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.strategy-segment:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .strategy h3,
 .risk h3 {
   margin: 0 0 8px;
   font-size: 13px;
+}
+
+.strategy-sub {
+  margin-left: 8px;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-faint);
 }
 
 .strategy-list {

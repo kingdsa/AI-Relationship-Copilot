@@ -2,8 +2,19 @@ import { JevClient, readNoul } from '../../ai/client/jev-client.js'
 import { RISK_QUESTIONS, STRATEGY_QUESTIONS } from '../../ai/schemas/questions.js'
 import type { SystemOneQuestion, SystemOneResponse } from '../../types/jev.js'
 import type { EmotionAnalysis } from '../../types/emotion.js'
-import type { ReplyStrategy, ReplyStrategyType, RiskAssessment } from '../../types/strategy.js'
-import { REPLY_STRATEGIES, STRATEGY_LABELS } from '../../types/strategy.js'
+import type {
+  CommunicationStrategyType,
+  ReplyStrategy,
+  ReplyStrategyType,
+  RiskAssessment,
+} from '../../types/strategy.js'
+import {
+  COMMUNICATION_STRATEGY_GUIDES,
+  COMMUNICATION_STRATEGY_LABELS,
+  DEFAULT_COMMUNICATION_STRATEGY,
+  REPLY_STRATEGIES,
+  STRATEGY_LABELS,
+} from '../../types/strategy.js'
 import type { ConversationContext } from '../../types/index.js'
 import { buildJevState } from '../context/context-builder.js'
 import { assessRisk } from './risk-control.js'
@@ -61,11 +72,12 @@ export class StrategyEngine {
   async decide(
     context: ConversationContext,
     emotion: EmotionAnalysis,
+    communicationStrategy: CommunicationStrategyType = DEFAULT_COMMUNICATION_STRATEGY,
   ): Promise<StrategyEngineResult> {
     const raw = await this.ask(context)
     return {
-      strategy: composeStrategy(raw, emotion),
-      risk: assessRisk(raw, emotion.confidence),
+      strategy: composeStrategy(raw, emotion, communicationStrategy),
+      risk: assessRisk(raw, emotion.confidence, communicationStrategy),
       raw,
     }
   }
@@ -74,6 +86,7 @@ export class StrategyEngine {
 export function composeStrategy(
   raw: SystemOneResponse,
   emotion: EmotionAnalysis,
+  communicationStrategy: CommunicationStrategyType = DEFAULT_COMMUNICATION_STRATEGY,
 ): ReplyStrategy {
   const primaryAnswer = raw.answers.strategy_primary
   const primaryRaw =
@@ -82,17 +95,29 @@ export function composeStrategy(
     ? (primaryRaw as ReplyStrategyType)
     : 'normal_reply'
 
-  const directives: string[] = [`主策略：${STRATEGY_LABELS[primary]}`]
-  const avoid: string[] = []
+  const guide = COMMUNICATION_STRATEGY_GUIDES[communicationStrategy]
+  const directives: string[] = [
+    `主策略：${STRATEGY_LABELS[primary]}`,
+    `沟通策略：${guide.label}`,
+    ...guide.directives,
+  ]
+  const avoid: string[] = [...guide.avoid]
+
+  const suppressed = (text: string) =>
+    guide.suppress.some((pattern) => text.includes(pattern))
 
   for (const q of STRATEGY_QUESTIONS) {
     const value = readNoul(raw, q.key, 0)
     if (value < DECISION_THRESHOLD) continue
-    if (q.directive) directives.push(q.directive)
-    if (q.avoid) avoid.push(q.avoid)
+    if (q.directive && !suppressed(q.directive)) directives.push(q.directive)
+    if (q.avoid && !suppressed(q.avoid)) avoid.push(q.avoid)
   }
 
-  if (emotion.intensity >= 0.6 && NEGATIVE_EMOTIONS.has(emotion.emotion)) {
+  const coldMode =
+    communicationStrategy === 'righteous_anger' ||
+    communicationStrategy === 'no_more_patience'
+
+  if (!coldMode && emotion.intensity >= 0.6 && NEGATIVE_EMOTIONS.has(emotion.emotion)) {
     directives.push('对方情绪强度较高：先把情绪接住，再谈事情本身')
   }
   if (emotion.intent === '希望解决问题') {
@@ -107,7 +132,7 @@ export function composeStrategy(
   if (emotion.relationshipState === 'cold' || emotion.relationshipState === 'conflict') {
     avoid.push('不要翻旧账，只谈当下这一件事')
   }
-  if (emotion.relationshipState === 'reconciliation') {
+  if (emotion.relationshipState === 'reconciliation' && !coldMode) {
     directives.push('顺着对方给的台阶下，态度要软')
   }
 
@@ -116,6 +141,8 @@ export function composeStrategy(
   return {
     primary,
     primaryLabel: STRATEGY_LABELS[primary],
+    communicationStrategy,
+    communicationStrategyLabel: COMMUNICATION_STRATEGY_LABELS[communicationStrategy],
     directives: Array.from(new Set(directives)),
     avoid: Array.from(new Set(avoid)),
     confidence: Number(confidence.toFixed(2)),

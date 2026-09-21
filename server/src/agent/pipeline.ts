@@ -134,8 +134,8 @@ export async function runAnalysis(
   timings.jev = Date.now() - t1
 
   const emotion = emotionResult.analysis
-  const strategy = composeStrategy(strategyRaw, emotion)
-  const risk = assessRisk(strategyRaw, emotion.confidence)
+  const strategy = composeStrategy(strategyRaw, emotion, profile.communicationStrategy)
+  const risk = assessRisk(strategyRaw, emotion.confidence, profile.communicationStrategy)
 
   const t2 = Date.now()
   const { record, memory } = buildHistoryRecord({
