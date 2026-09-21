@@ -19,6 +19,22 @@ export interface ReplyGeneratorOptions {
   count: number
 }
 
+function describeError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error)
+  const cause = (error as { cause?: unknown }).cause
+  if (cause instanceof AggregateError) {
+    const details = cause.errors
+      .map((item) => describeError(item))
+      .filter((text, index, all) => all.indexOf(text) === index)
+    return `${error.message}（${details.join('；') || cause.message}）`
+  }
+  if (cause instanceof Error) {
+    const code = (cause as { code?: string }).code
+    return `${error.message}（${cause.message}${code ? ` / ${code}` : ''}）`
+  }
+  return error.message
+}
+
 export interface ReplyGeneratorOutput {
   replies: ReplySuggestion[]
   source: ReplySuggestion['source']
@@ -88,7 +104,7 @@ export class ReplyGenerator {
       } catch (error) {
         return {
           ...this.compose(context, emotion, strategy, options),
-          warning: `LLM 调用失败（${error instanceof Error ? error.message : String(error)}），已降级为本地合成器。`,
+          warning: `LLM 调用失败（${describeError(error)}），已降级为本地合成器。`,
         }
       }
     }
