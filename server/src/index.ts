@@ -5,7 +5,6 @@ import cors from 'cors'
 import express from 'express'
 import { config } from './config.js'
 import { api } from './routes/api.js'
-import { jevStatus } from './agent/pipeline.js'
 
 const app = express()
 app.use(cors())
@@ -31,13 +30,8 @@ app.use(
   },
 )
 
-app.listen(config.port, async () => {
-  const jev = await jevStatus()
+app.listen(config.port, () => {
   console.log(`AI Relationship Copilot server 已启动：http://localhost:${config.port}`)
-  console.log(
-    jev.configured
-      ? `JEV 已配置（${jev.model}）`
-      : 'JEV 未配置：请在网页右上角「设置」中手动输入 JEV API Key',
-  )
+  console.log('JEV / LLM 凭据由每位使用者在浏览器中配置（localStorage），服务端不保存密钥。')
   console.log(`前端开发地址：http://localhost:5173（npm run dev）`)
 })

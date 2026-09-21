@@ -47,26 +47,24 @@ npm run build
 npm start          # http://localhost:8787
 ```
 
-## 3. 配置（JEV API Key 必须手动输入）
+## 3. 配置与数据（全部保存在浏览器本地，服务端无状态）
 
 启动后首次打开页面会弹出 **「配置 JEV API Key」** 弹窗，请手动粘贴你自己的 Key：
 
 - 也可随时点击右上角状态胶囊 **「JEV 未配置 · 点击输入 Key」** 或 **设置 → JEV 决策引擎** 修改；
-- Key 仅保存在本机服务端 `server/data/settings.json`，接口只返回打码值（`••••••••`），不会回显给前端；
-- 清除：设置面板中的「清除 JEV 配置」；
-- `server/.env` 中的 `JEV_API_KEY` 仅作为可选回退，默认留空，不强制使用。
+- Key / Base URL / 模型只保存在**你自己的浏览器**（localStorage，key `ai-relationship-copilot.credentials.v1`），随每个请求通过请求头发给服务端；
+- 服务端**不保存密钥、不读取密钥环境变量**；多人共用同一部署时，每个人用的都是自己的 Key 和 Base URL，互不覆盖；
+- 清除：设置面板中的「清除 JEV 配置」后点击「保存设置」（LLM 同理）；
+- 可选：在设置面板填写 OpenAI 兼容的 LLM（更自然的回复文本），凭据同样只存在浏览器本地；
+- 沟通风格、关系记忆、情绪时间线/分析历史同样只存在浏览器本地（key `ai-relationship-copilot.profile.v1`），随请求发送给服务端计算后返回，服务端**不落盘**（`server/data` 已废弃）。
 
-```bash
-# server/.env（可选）
-JEV_API_KEY=            # 一般留空，改为在界面手动输入
-JEV_BASE_URL=https://api.typesafe.ai/v1
-JEV_MODEL=jev-latest
+localStorage 一览：
 
-# 可选：OpenAI 兼容的 LLM（更自然的回复文本），同样可在界面里填写
-LLM_BASE_URL=https://api.deepseek.com/v1
-LLM_API_KEY=sk-xxx
-LLM_MODEL=deepseek-chat
-```
+| key | 内容 |
+| --- | --- |
+| `ai-relationship-copilot.credentials.v1` | JEV / LLM 的 apiKey、baseUrl、model、vision |
+| `ai-relationship-copilot.profile.v1` | 双方沟通风格、自动分析开关、关系记忆、情绪时间线 |
+| `ai-relationship-copilot.messages.v1` | 聊天框对话记录 |
 
 若使用多模态模型，勾选"该模型支持图片输入"，她发来的图片会一起发给 LLM。
 
@@ -87,14 +85,13 @@ LLM_MODEL=deepseek-chat
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/health` | JEV / LLM 配置状态 |
-| GET | `/api/state` | 关系记忆、风格、分析历史、配置（密钥打码） |
-| PUT | `/api/settings` | 更新 JEV Key / 沟通风格 / 关系记忆 / LLM 配置 / 自动分析开关 |
+| GET | `/api/health` | 当前请求（按请求头凭据）的 JEV / LLM 配置状态 |
 | POST | `/api/observe` | JEV 页面观察 + 截图 + 消息提取 |
-| POST | `/api/analyze` | Context Builder + Emotion Engine + Strategy Engine + 风险控制 + 记忆写入 |
+| POST | `/api/analyze` | Context Builder + Emotion Engine + Strategy Engine + 风险控制；返回合并后的记忆与时间线记录 |
 | POST | `/api/reply` | Reply Generator（复用分析缓存，`variant` 控制重新生成） |
 | POST | `/api/send` | JEV Executor：定位输入框 → 输入 → 点击发送 |
-| POST | `/api/reset-conversation` | 清空分析历史（关系记忆保留） |
+
+`/api/analyze`、`/api/reply` 的请求体需带 `profile`（风格 + 关系记忆），返回的 `relationshipMemory` / `historyRecord` 由前端写入 localStorage。
 
 ## 6. 目录结构（对应 PRD §31）
 
@@ -102,7 +99,7 @@ LLM_MODEL=deepseek-chat
 server/src/
 ├── agent/
 │   ├── observer/     # page-observer(JEV 抽象)、simulator-agent、screenshot
-│   ├── context/      # context-builder、memory-builder
+│   ├── context/      # context-builder、memory-builder、profile(校验/合并)
 │   ├── emotion/      # emotion-engine
 │   ├── strategy/     # strategy-engine、risk-control
 │   ├── reply/        # reply-generator、composer
@@ -110,14 +107,16 @@ server/src/
 │   └── pipeline.ts   # 编排：Observe→Understand→Decide→Act
 ├── ai/
 │   ├── client/       # jev-client、llm-client
+│   ├── credentials.ts # 从请求头解析调用者凭据（服务端不落盘）
 │   ├── prompts/      # PRD §18 System Prompt
 │   └── schemas/      # JEV 问题定义（choice / score / noul）
-├── memory/           # relationship-memory、user-profile、conversation-history
-├── routes/           # HTTP API
+├── routes/           # HTTP API（无状态：凭据走请求头，画像走请求体）
 └── types/            # message / emotion / strategy / reply
 
 web/src/
 ├── components/       # ChatWindow、AnalysisPanel、ReplyPanel、JevLogPanel、MemoryPanel、SettingsDrawer
+├── credentials.ts    # 凭据存 localStorage + 组装请求头
+├── profile.ts        # 风格/关系记忆/时间线存 localStorage
 ├── api.ts、types.ts、App.tsx
 ```
 

@@ -1,12 +1,19 @@
+import { createHash } from 'node:crypto'
 import { JevClient, JevError } from '../ai/client/jev-client.js'
 import { LlmClient } from '../ai/client/llm-client.js'
-import { settingsStore } from '../memory/user-profile.js'
+import type { Credentials } from '../ai/credentials.js'
 import type { Message } from '../types/message.js'
 import type { EmotionAnalysis } from '../types/emotion.js'
-import type { ConversationContext, PipelineResult } from '../types/index.js'
+import type {
+  ConversationContext,
+  HistoryRecord,
+  PipelineResult,
+  RelationshipMemory,
+} from '../types/index.js'
 import type { ReplyStrategy, RiskAssessment } from '../types/strategy.js'
 import { buildContext } from './context/context-builder.js'
-import { recordAnalysis } from './context/memory-builder.js'
+import { buildHistoryRecord } from './context/memory-builder.js'
+import type { UserProfile } from './context/profile.js'
 import { EmotionEngine } from './emotion/emotion-engine.js'
 import { StrategyEngine, composeStrategy } from './strategy/strategy-engine.js'
 import { assessRisk } from './strategy/risk-control.js'
@@ -22,60 +29,92 @@ export interface AnalysisBundle {
   jevModel: string
   timings: Record<string, number>
   historyId: string
+  /** 供前端写入自己的 localStorage */
+  historyRecord: HistoryRecord
+  relationshipMemory: RelationshipMemory
 }
 
 interface CachedEntry {
-  signature: string
+  /** 同一份分析会同时登记"请求前画像"与"记忆合并后画像"两种签名，便于随后的 reply 命中 */
+  signatures: string[]
   bundle: AnalysisBundle
 }
 
-const MAX_CACHE = 20
+const MAX_CACHE = 40
 const analysisCache: CachedEntry[] = []
 
 const browserAgent = new SimulatorBrowserAgent()
 const executor = new JevExecutor(browserAgent)
 
 /**
- * JEV 客户端按当前设置即时构建：API Key 由用户在界面手动输入，
- * 保存于 data/settings.json，不从代码或前端回显。
+ * JEV / LLM 客户端按请求即时构建：凭据由调用方通过请求头传入（前端 localStorage），
+ * 服务端不保存密钥，多人共用时各用各的 Key 与 Base URL。
  */
-async function makeJevClient(): Promise<JevClient> {
-  const settings = await settingsStore.get()
+function makeJevClient(credentials: Credentials): JevClient {
   return new JevClient({
-    apiKey: settings.jev.apiKey,
-    baseUrl: settings.jev.baseUrl,
-    model: settings.jev.model,
+    apiKey: credentials.jev.apiKey,
+    baseUrl: credentials.jev.baseUrl,
+    model: credentials.jev.model,
   })
 }
 
-async function makeReplyGenerator(): Promise<ReplyGenerator> {
-  const settings = await settingsStore.get()
-  const llm = settings.llm.apiKey
+function makeReplyGenerator(credentials: Credentials): ReplyGenerator {
+  const llm = credentials.llm.apiKey
     ? new LlmClient({
-        baseUrl: settings.llm.baseUrl,
-        apiKey: settings.llm.apiKey,
-        model: settings.llm.model,
-        vision: settings.llm.vision,
+        baseUrl: credentials.llm.baseUrl,
+        apiKey: credentials.llm.apiKey,
+        model: credentials.llm.model,
+        vision: credentials.llm.vision,
       })
     : null
   return new ReplyGenerator(llm?.configured ? llm : null)
 }
 
-export function invalidateAnalysisCache(): void {
-  analysisCache.length = 0
+/**
+ * 缓存指纹：密钥 + 画像（风格/记忆）一起参与，避免不同使用者
+ * 或不同记忆状态互相命中缓存。
+ */
+function fingerprint(credentials: Credentials, profile: UserProfile): string {
+  return createHash('sha256')
+    .update(
+      [
+        credentials.jev.baseUrl,
+        credentials.jev.model,
+        credentials.jev.apiKey,
+        JSON.stringify(profile),
+      ].join('\n'),
+    )
+    .digest('hex')
+    .slice(0, 16)
 }
 
-function signatureOf(messages: Message[]): string {
+function signatureOf(messages: Message[], credentials: Credentials, profile: UserProfile): string {
   const last = messages[messages.length - 1]
-  return `${messages.length}:${last?.role ?? ''}:${last?.content ?? ''}`
+  return `${fingerprint(credentials, profile)}:${messages.length}:${last?.role ?? ''}:${last?.content ?? ''}`
 }
 
-export async function runAnalysis(messages: Message[]): Promise<AnalysisBundle> {
-  const signature = signatureOf(messages)
-  const cached = analysisCache.find((entry) => entry.signature === signature)
-  if (cached) return cached.bundle
+function findCached(signature: string): AnalysisBundle | null {
+  for (let index = analysisCache.length - 1; index >= 0; index -= 1) {
+    if (analysisCache[index].signatures.includes(signature)) return analysisCache[index].bundle
+  }
+  return null
+}
 
-  const jev = await makeJevClient()
+function remember(signatures: string[], bundle: AnalysisBundle): void {
+  analysisCache.push({ signatures: Array.from(new Set(signatures)), bundle })
+  while (analysisCache.length > MAX_CACHE) analysisCache.shift()
+}
+
+export async function runAnalysis(
+  messages: Message[],
+  credentials: Credentials,
+  profile: UserProfile,
+): Promise<AnalysisBundle> {
+  const signature = signatureOf(messages, credentials, profile)
+  const cached = findCached(signature)
+  if (cached) return cached
+
+  const jev = makeJevClient(credentials)
   if (!jev.configured) {
     throw new JevError('尚未配置 JEV API Key，请点击右上角「设置」手动输入')
   }
@@ -84,7 +123,7 @@ export async function runAnalysis(messages: Message[]): Promise<AnalysisBundle> 
 
   const timings: Record<string, number> = {}
   const t0 = Date.now()
-  const context = await buildContext(messages)
+  const context = buildContext(messages, profile)
   timings.context = Date.now() - t0
 
   const t1 = Date.now()
@@ -99,7 +138,7 @@ export async function runAnalysis(messages: Message[]): Promise<AnalysisBundle> 
   const risk = assessRisk(strategyRaw, emotion.confidence)
 
   const t2 = Date.now()
-  const record = await recordAnalysis({
+  const { record, memory } = buildHistoryRecord({
     incoming: context.currentMessage?.content ?? '',
     memoryText: context.recentMessages
       .filter((m) => m.role === 'other')
@@ -107,6 +146,7 @@ export async function runAnalysis(messages: Message[]): Promise<AnalysisBundle> 
       .map((m) => m.content)
       .join('\n'),
     emotion,
+    memory: profile.relationshipMemory,
   })
   timings.memory = Date.now() - t2
 
@@ -118,10 +158,12 @@ export async function runAnalysis(messages: Message[]): Promise<AnalysisBundle> 
     jevModel: emotionResult.raw.model,
     timings,
     historyId: record.id,
+    historyRecord: record,
+    relationshipMemory: memory,
   }
 
-  analysisCache.push({ signature, bundle })
-  if (analysisCache.length > MAX_CACHE) analysisCache.shift()
+  const mergedProfile: UserProfile = { ...profile, relationshipMemory: memory }
+  remember([signature, signatureOf(messages, credentials, mergedProfile)], bundle)
   return bundle
 }
 
@@ -133,8 +175,9 @@ export interface GenerateRepliesOptions {
 export async function generateReplies(
   bundle: AnalysisBundle,
   options: GenerateRepliesOptions,
+  credentials: Credentials,
 ): Promise<PipelineResult & { warning?: string }> {
-  const generator = await makeReplyGenerator()
+  const generator = makeReplyGenerator(credentials)
   const t0 = Date.now()
   const output = await generator.generate(
     bundle.context,
@@ -162,22 +205,6 @@ export function getExecutor(): JevExecutor {
 
 export function getBrowserAgent(): SimulatorBrowserAgent {
   return browserAgent
-}
-
-export async function jevStatus(): Promise<{
-  configured: boolean
-  model: string
-}> {
-  const settings = await settingsStore.get()
-  return {
-    configured: Boolean(settings.jev.apiKey && settings.jev.baseUrl),
-    model: settings.jev.model,
-  }
-}
-
-export async function llmStatus(): Promise<{ configured: boolean; model: string | null }> {
-  const generator = await makeReplyGenerator()
-  return { configured: generator.llmConfigured, model: generator.llmModel }
 }
 
 export type { PipelineResult }

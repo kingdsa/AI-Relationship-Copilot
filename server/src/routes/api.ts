@@ -1,21 +1,30 @@
 import { Router } from 'express'
-import type { Request, Response } from 'express'
+import type { NextFunction, Request, Response } from 'express'
 import { randomUUID } from 'node:crypto'
 import {
   generateReplies,
   getBrowserAgent,
   getExecutor,
-  invalidateAnalysisCache,
-  jevStatus,
-  llmStatus,
   runAnalysis,
 } from '../agent/pipeline.js'
-import { conversationHistory } from '../memory/conversation-history.js'
-import { relationshipMemory } from '../memory/relationship-memory.js'
-import { settingsStore } from '../memory/user-profile.js'
+import { sanitizeProfile } from '../agent/context/profile.js'
+import { credentialsFromRequest, jevReady, llmReady } from '../ai/credentials.js'
 import type { Attachment, Message } from '../types/message.js'
 
+/**
+ * 服务端尽量无状态：
+ * - 凭据来自请求头（前端 localStorage）
+ * - 沟通风格 / 关系记忆 / 情绪时间线来自请求体（前端 localStorage）
+ * 服务端只计算并返回结果，不保存任何使用者数据。
+ */
 export const api = Router()
+
+/** Express 4 不会捕获 async 抛错，统一转发给错误中间件，避免进程退出 */
+function handle(fn: (req: Request, res: Response) => Promise<void>) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    fn(req, res).catch(next)
+  }
+}
 
 function sanitizeMessages(input: unknown): Message[] {
   if (!Array.isArray(input)) return []
@@ -50,82 +59,19 @@ function parseIntParam(value: unknown, fallback: number, min: number, max: numbe
   return Math.min(max, Math.max(min, Math.round(parsed)))
 }
 
-api.get('/health', async (_req: Request, res: Response) => {
-  const [llm, jev] = await Promise.all([llmStatus(), jevStatus()])
+api.get('/health', (req: Request, res: Response) => {
+  const credentials = credentialsFromRequest(req)
   res.json({
     ok: true,
-    jev,
-    llm,
+    jev: { configured: jevReady(credentials), model: credentials.jev.model },
+    llm: {
+      configured: llmReady(credentials),
+      model: credentials.llm.model || null,
+    },
   })
 })
 
-api.get('/state', async (_req: Request, res: Response) => {
-  const [memory, settings, history, llm, jev] = await Promise.all([
-    relationshipMemory.get(),
-    settingsStore.getPublic(),
-    conversationHistory.list(50),
-    llmStatus(),
-    jevStatus(),
-  ])
-  res.json({
-    memory,
-    settings,
-    history,
-    jev,
-    llm,
-  })
-})
-
-api.put('/settings', async (req: Request, res: Response) => {
-  const body = req.body ?? {}
-  const patch: Parameters<typeof settingsStore.update>[0] = {}
-
-  if (body.userCommunicationStyle && typeof body.userCommunicationStyle === 'object') {
-    patch.userCommunicationStyle = body.userCommunicationStyle
-  }
-  if (body.otherCommunicationStyle && typeof body.otherCommunicationStyle === 'object') {
-    patch.otherCommunicationStyle = body.otherCommunicationStyle
-  }
-  if (typeof body.autoAnalyze === 'boolean') {
-    patch.autoAnalyze = body.autoAnalyze
-  }
-  if (typeof body.clearLlm === 'boolean') {
-    patch.clearLlm = body.clearLlm
-  }
-  if (typeof body.clearJev === 'boolean') {
-    patch.clearJev = body.clearJev
-  }
-  if (body.jev && typeof body.jev === 'object') {
-    const jev = body.jev as Record<string, unknown>
-    patch.jev = {
-      baseUrl: typeof jev.baseUrl === 'string' ? jev.baseUrl.trim() : '',
-      // 前端提交空字符串表示不修改已保存的 key
-      apiKey: typeof jev.apiKey === 'string' ? jev.apiKey.trim() : '',
-      model: typeof jev.model === 'string' ? jev.model.trim() : '',
-    }
-  }
-  if (body.llm && typeof body.llm === 'object') {
-    const llm = body.llm as Record<string, unknown>
-    patch.llm = {
-      baseUrl: typeof llm.baseUrl === 'string' ? llm.baseUrl.trim() : '',
-      // 前端提交空字符串表示不修改已保存的 key
-      apiKey: typeof llm.apiKey === 'string' ? llm.apiKey.trim() : '',
-      model: typeof llm.model === 'string' ? llm.model.trim() : '',
-      vision: Boolean(llm.vision),
-    }
-  }
-
-  await settingsStore.update(patch)
-
-  if (body.relationshipMemory && typeof body.relationshipMemory === 'object') {
-    await relationshipMemory.update(body.relationshipMemory)
-  }
-
-  invalidateAnalysisCache()
-  res.json({ ok: true })
-})
-
-api.post('/observe', async (req: Request, res: Response) => {
+api.post('/observe', handle(async (req: Request, res: Response) => {
   const messages = sanitizeMessages(req.body?.messages)
   const agent = getBrowserAgent()
   const [page, screenshot, extracted] = await Promise.all([
@@ -134,20 +80,21 @@ api.post('/observe', async (req: Request, res: Response) => {
     agent.extractMessages(messages),
   ])
   res.json({ page, screenshot, extracted })
-})
+}))
 
-api.post('/analyze', async (req: Request, res: Response) => {
+api.post('/analyze', handle(async (req: Request, res: Response) => {
   const messages = sanitizeMessages(req.body?.messages)
   if (messages.length === 0) {
     res.status(422).json({ error: 'messages 不能为空' })
     return
   }
-  const jev = await jevStatus()
-  if (!jev.configured) {
+  const credentials = credentialsFromRequest(req)
+  if (!jevReady(credentials)) {
     res.status(409).json({ error: '尚未配置 JEV API Key，请点击右上角「设置」手动输入后再试' })
     return
   }
-  const bundle = await runAnalysis(messages)
+  const profile = sanitizeProfile(req.body?.profile)
+  const bundle = await runAnalysis(messages, credentials, profile)
   res.json({
     emotion: bundle.emotion,
     strategy: bundle.strategy,
@@ -155,28 +102,36 @@ api.post('/analyze', async (req: Request, res: Response) => {
     jevModel: bundle.jevModel,
     timings: bundle.timings,
     historyId: bundle.historyId,
+    historyRecord: bundle.historyRecord,
+    relationshipMemory: bundle.relationshipMemory,
   })
-})
+}))
 
-api.post('/reply', async (req: Request, res: Response) => {
+api.post('/reply', handle(async (req: Request, res: Response) => {
   const messages = sanitizeMessages(req.body?.messages)
   if (messages.length === 0) {
     res.status(422).json({ error: 'messages 不能为空' })
     return
   }
-  const jev = await jevStatus()
-  if (!jev.configured) {
+  const credentials = credentialsFromRequest(req)
+  if (!jevReady(credentials)) {
     res.status(409).json({ error: '尚未配置 JEV API Key，请点击右上角「设置」手动输入后再试' })
     return
   }
   const variant = parseIntParam(req.body?.variant, 0, 0, 20)
   const count = parseIntParam(req.body?.count, 3, 1, 3)
-  const bundle = await runAnalysis(messages)
-  const result = await generateReplies(bundle, { variant, count })
-  res.json(result)
-})
+  const profile = sanitizeProfile(req.body?.profile)
+  const bundle = await runAnalysis(messages, credentials, profile)
+  const result = await generateReplies(bundle, { variant, count }, credentials)
+  res.json({
+    ...result,
+    historyId: bundle.historyId,
+    historyRecord: bundle.historyRecord,
+    relationshipMemory: bundle.relationshipMemory,
+  })
+}))
 
-api.post('/send', async (req: Request, res: Response) => {
+api.post('/send', handle(async (req: Request, res: Response) => {
   const messages = sanitizeMessages(req.body?.messages)
   const text = typeof req.body?.text === 'string' ? req.body.text.trim() : ''
   if (!text) {
@@ -186,18 +141,5 @@ api.post('/send', async (req: Request, res: Response) => {
   const result = await getExecutor().send(text, messages, {
     simulateDomFailure: Boolean(req.body?.simulateDomFailure),
   })
-  await conversationHistory.attachReply(String(req.body?.historyId ?? ''), text)
   res.json(result)
-})
-
-api.post('/reset-conversation', async (_req: Request, res: Response) => {
-  await conversationHistory.clear()
-  res.json({ ok: true })
-})
-
-api.post('/memory', async (req: Request, res: Response) => {
-  const patch = req.body && typeof req.body === 'object' ? req.body : {}
-  const memory = await relationshipMemory.update(patch)
-  invalidateAnalysisCache()
-  res.json({ ok: true, memory })
-})
+}))

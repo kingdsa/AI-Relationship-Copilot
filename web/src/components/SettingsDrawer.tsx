@@ -1,12 +1,29 @@
 import { useEffect, useState } from 'react'
-import type { AppStateResponse, CommunicationStyle, RelationshipMemory } from '../types'
+import {
+  DEFAULT_JEV_BASE_URL,
+  DEFAULT_JEV_MODEL,
+  type Credentials,
+  type JevCredentials,
+  type LlmCredentials,
+} from '../credentials'
+import type { LocalProfile } from '../profile'
+import type { CommunicationStyle, RelationshipMemory, SettingsSavePayload } from '../types'
 
 interface SettingsDrawerProps {
   open: boolean
-  state: AppStateResponse | null
+  profile: LocalProfile
+  credentials: Credentials
   onClose: () => void
-  onSave: (patch: Record<string, unknown>) => Promise<void>
+  onSave: (payload: SettingsSavePayload) => Promise<void>
 }
+
+const emptyJev = (): JevCredentials => ({
+  apiKey: '',
+  baseUrl: DEFAULT_JEV_BASE_URL,
+  model: DEFAULT_JEV_MODEL,
+})
+
+const emptyLlm = (): LlmCredentials => ({ baseUrl: '', apiKey: '', model: '', vision: false })
 
 const toLines = (items: string[]) => items.join('\n')
 const fromLines = (text: string) =>
@@ -99,48 +116,53 @@ function StyleFields({
   )
 }
 
-export function SettingsDrawer({ open, state, onClose, onSave }: SettingsDrawerProps) {
+export function SettingsDrawer({ open, profile, credentials, onClose, onSave }: SettingsDrawerProps) {
   const [userStyle, setUserStyle] = useState<CommunicationStyle | null>(null)
   const [otherStyle, setOtherStyle] = useState<CommunicationStyle | null>(null)
   const [memory, setMemory] = useState<RelationshipMemory | null>(null)
-  const [jev, setJev] = useState({ baseUrl: '', apiKey: '', model: '' })
-  const [llm, setLlm] = useState({ baseUrl: '', apiKey: '', model: '', vision: false })
+  const [jev, setJev] = useState<JevCredentials>(emptyJev)
+  const [llm, setLlm] = useState<LlmCredentials>(emptyLlm)
   const [autoAnalyze, setAutoAnalyze] = useState(true)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!state || !open) return
-    setUserStyle(state.settings.userCommunicationStyle)
-    setOtherStyle(state.settings.otherCommunicationStyle)
-    setJev({
-      baseUrl: state.settings.jev.baseUrl,
-      apiKey: '',
-      model: state.settings.jev.model,
-    })
-    setLlm({
-      baseUrl: state.settings.llm.baseUrl,
-      apiKey: '',
-      model: state.settings.llm.model,
-      vision: state.settings.llm.vision,
-    })
-    setMemory(state.memory)
-    setAutoAnalyze(state.settings.autoAnalyze)
+    if (!open) return
+    setUserStyle(profile.userCommunicationStyle)
+    setOtherStyle(profile.otherCommunicationStyle)
+    setJev(credentials.jev)
+    setLlm(credentials.llm)
+    setMemory(profile.relationshipMemory)
+    setAutoAnalyze(profile.autoAnalyze)
     setMessage(null)
-  }, [state, open])
+  }, [profile, open, credentials])
 
-  if (!open || !state || !userStyle || !otherStyle || !memory) return null
+  if (!open || !userStyle || !otherStyle || !memory) return null
+
+  const jevConfigured = Boolean(jev.apiKey.trim() && jev.baseUrl.trim())
+  const llmConfigured = Boolean(llm.apiKey.trim() && llm.baseUrl.trim() && llm.model.trim())
 
   const save = async () => {
     setSaving(true)
     setMessage(null)
     try {
       await onSave({
+        credentials: {
+          jev: {
+            apiKey: jev.apiKey.trim(),
+            baseUrl: jev.baseUrl.trim() || DEFAULT_JEV_BASE_URL,
+            model: jev.model.trim() || DEFAULT_JEV_MODEL,
+          },
+          llm: {
+            baseUrl: llm.baseUrl.trim(),
+            apiKey: llm.apiKey.trim(),
+            model: llm.model.trim(),
+            vision: llm.vision,
+          },
+        },
         userCommunicationStyle: userStyle,
         otherCommunicationStyle: otherStyle,
         autoAnalyze,
-        jev,
-        llm,
         relationshipMemory: memory,
       })
       setMessage('已保存')
@@ -151,26 +173,14 @@ export function SettingsDrawer({ open, state, onClose, onSave }: SettingsDrawerP
     }
   }
 
-  const clearLlm = async () => {
-    setSaving(true)
-    try {
-      await onSave({ clearLlm: true })
-      setLlm({ baseUrl: '', apiKey: '', model: '', vision: false })
-      setMessage('已清除 LLM 配置')
-    } finally {
-      setSaving(false)
-    }
+  const clearLlm = () => {
+    setLlm(emptyLlm())
+    setMessage('已清空 LLM 配置，点击「保存设置」后生效')
   }
 
-  const clearJev = async () => {
-    setSaving(true)
-    try {
-      await onSave({ clearJev: true })
-      setJev({ baseUrl: '', apiKey: '', model: '' })
-      setMessage('已清除 JEV 配置')
-    } finally {
-      setSaving(false)
-    }
+  const clearJev = () => {
+    setJev(emptyJev())
+    setMessage('已清空 JEV 配置，点击「保存设置」后生效')
   }
 
   return (
@@ -187,14 +197,14 @@ export function SettingsDrawer({ open, state, onClose, onSave }: SettingsDrawerP
           <fieldset className="settings-group">
             <legend>JEV 决策引擎（必填，手动输入）</legend>
             <p className="settings-hint">
-              JEV（TypeSafe System One）负责情绪 / 意图 / 策略决策。API Key 需要你手动输入，
-              仅保存在本机服务端，不会回显。
+              JEV（TypeSafe System One）负责情绪 / 意图 / 策略决策。API Key 只保存在你自己的
+              浏览器（localStorage），随请求发送，服务端不保存，多人共用时各用各的 Key。
             </p>
             <label>
               API Key
               <input
                 type="password"
-                placeholder={state.settings.jev.apiKey ? '已保存（留空不修改）' : 'apikey_...'}
+                placeholder="apikey_..."
                 value={jev.apiKey}
                 onChange={(event) => setJev({ ...jev, apiKey: event.target.value })}
               />
@@ -216,10 +226,10 @@ export function SettingsDrawer({ open, state, onClose, onSave }: SettingsDrawerP
               />
             </label>
             <div className="settings-row">
-              <span className={`chip ${state.jev.configured ? 'chip-ok' : 'chip-danger'}`}>
-                {state.jev.configured ? `JEV 已配置 ${state.jev.model}` : 'JEV 未配置'}
+              <span className={`chip ${jevConfigured ? 'chip-ok' : 'chip-danger'}`}>
+                {jevConfigured ? `JEV 已配置 ${jev.model.trim() || DEFAULT_JEV_MODEL}` : 'JEV 未配置'}
               </span>
-              <button className="btn btn-ghost btn-sm" onClick={clearJev} disabled={saving}>
+              <button className="btn btn-ghost btn-sm" onClick={clearJev}>
                 清除 JEV 配置
               </button>
             </div>
@@ -229,6 +239,7 @@ export function SettingsDrawer({ open, state, onClose, onSave }: SettingsDrawerP
             <legend>AI 生成引擎（LLM，可选）</legend>
             <p className="settings-hint">
               JEV 负责情绪/意图/策略决策，LLM 负责把决策表达成自然语言。不配置时使用内置合成器。
+              配置同样只保存在你自己的浏览器（localStorage）。
             </p>
             <label>
               Base URL
@@ -242,7 +253,7 @@ export function SettingsDrawer({ open, state, onClose, onSave }: SettingsDrawerP
               API Key
               <input
                 type="password"
-                placeholder={state.settings.llm.apiKey ? '已保存（留空不修改）' : 'sk-...'}
+                placeholder="sk-..."
                 value={llm.apiKey}
                 onChange={(event) => setLlm({ ...llm, apiKey: event.target.value })}
               />
@@ -265,9 +276,9 @@ export function SettingsDrawer({ open, state, onClose, onSave }: SettingsDrawerP
             </label>
             <div className="settings-row">
               <span className="chip chip-muted">
-                当前：{state.llm.configured ? `已配置 ${state.llm.model}` : '未配置'}
+                当前：{llmConfigured ? `已配置 ${llm.model.trim()}` : '未配置'}
               </span>
-              <button className="btn btn-ghost btn-sm" onClick={clearLlm} disabled={saving}>
+              <button className="btn btn-ghost btn-sm" onClick={clearLlm}>
                 清除 LLM 配置
               </button>
             </div>

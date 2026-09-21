@@ -1,3 +1,5 @@
+import type { Credentials } from './credentials'
+
 export interface Attachment {
   id: string
   type: 'image' | 'emoji' | 'file' | 'link'
@@ -58,6 +60,9 @@ export interface AnalyzeResponse {
   jevModel: string
   timings: Record<string, number>
   historyId: string
+  /** 服务端合并后的关系记忆与本次时间线记录，由前端写入 localStorage */
+  relationshipMemory: RelationshipMemory
+  historyRecord: HistoryRecord
 }
 
 export interface ReplyResponse {
@@ -69,6 +74,9 @@ export interface ReplyResponse {
   jevModel: string
   timings: Record<string, number>
   warning?: string
+  historyId: string
+  relationshipMemory: RelationshipMemory
+  historyRecord: HistoryRecord
 }
 
 export interface ActionStep {
@@ -130,16 +138,11 @@ export interface HistoryRecord {
   replyText?: string
 }
 
-export interface AppStateResponse {
-  memory: RelationshipMemory
-  settings: {
-    userCommunicationStyle: CommunicationStyle
-    otherCommunicationStyle: CommunicationStyle
-    jev: { baseUrl: string; apiKey: string; model: string; configured: boolean; fromEnv: boolean }
-    llm: { baseUrl: string; apiKey: string; model: string; vision: boolean; configured: boolean; fromEnv: boolean }
-    autoAnalyze: boolean
-  }
-  history: HistoryRecord[]
-  jev: { configured: boolean; model: string }
-  llm: { configured: boolean; model: string | null }
+/** 设置面板的一次保存：凭据与画像都进 localStorage，不经过服务端 */
+export interface SettingsSavePayload {
+  credentials?: Credentials
+  userCommunicationStyle?: CommunicationStyle
+  otherCommunicationStyle?: CommunicationStyle
+  autoAnalyze?: boolean
+  relationshipMemory?: RelationshipMemory
 }

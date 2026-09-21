@@ -1,6 +1,5 @@
 import { config } from '../../config.js'
-import { relationshipMemory } from '../../memory/relationship-memory.js'
-import { settingsStore } from '../../memory/user-profile.js'
+import type { UserProfile } from './profile.js'
 import type { Attachment, ConversationContext, Message } from '../../types/index.js'
 
 function summarize(messages: Message[]): string {
@@ -20,13 +19,10 @@ function summarize(messages: Message[]): string {
 
 /**
  * Context Builder（PRD §7）：把页面/消息/记忆/风格整理成统一上下文。
+ * 画像（风格 + 关系记忆）由前端传入，服务端不保存。
  */
-export async function buildContext(messages: Message[]): Promise<ConversationContext> {
+export function buildContext(messages: Message[], profile: UserProfile): ConversationContext {
   const recentMessages = messages.slice(-config.recentMessageLimit)
-  const [memory, settings] = await Promise.all([
-    relationshipMemory.get(),
-    settingsStore.get(),
-  ])
 
   const attachments: Attachment[] = recentMessages.flatMap((m) => m.attachments ?? [])
   const lastMessage = recentMessages[recentMessages.length - 1] ?? null
@@ -36,9 +32,9 @@ export async function buildContext(messages: Message[]): Promise<ConversationCon
     recentMessages,
     attachments,
     conversationSummary: summarize(recentMessages),
-    relationshipMemory: memory,
-    userCommunicationStyle: settings.userCommunicationStyle,
-    otherCommunicationStyle: settings.otherCommunicationStyle,
+    relationshipMemory: profile.relationshipMemory,
+    userCommunicationStyle: profile.userCommunicationStyle,
+    otherCommunicationStyle: profile.otherCommunicationStyle,
   }
 }
 

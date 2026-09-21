@@ -1,5 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './api'
+import {
+  isJevConfigured,
+  isLlmConfigured,
+  loadCredentials,
+  saveCredentials,
+  type Credentials,
+  type JevCredentials,
+} from './credentials'
+import {
+  applyAnalysisResult,
+  attachHistoryReply,
+  clearHistory,
+  loadProfile,
+  profileRequest,
+  saveProfile,
+  type LocalProfile,
+} from './profile'
 import { AnalysisPanel } from './components/AnalysisPanel'
 import { ChatWindow } from './components/ChatWindow'
 import { JevLogPanel } from './components/JevLogPanel'
@@ -9,12 +26,12 @@ import { ReplyPanel } from './components/ReplyPanel'
 import { SettingsDrawer } from './components/SettingsDrawer'
 import type {
   AnalyzeResponse,
-  AppStateResponse,
   Attachment,
   Message,
   ObserveResponse,
   ReplyResponse,
   SendResponse,
+  SettingsSavePayload,
 } from './types'
 
 const STORAGE_KEY = 'ai-relationship-copilot.messages.v1'
@@ -52,7 +69,9 @@ export default function App() {
   const [sendResult, setSendResult] = useState<SendResponse | null>(null)
   const [observeResult, setObserveResult] = useState<ObserveResponse | null>(null)
   const [simulateDomFailure, setSimulateDomFailure] = useState(false)
-  const [appState, setAppState] = useState<AppStateResponse | null>(null)
+  const [profile, setProfile] = useState<LocalProfile>(loadProfile)
+  const profileRef = useRef(profile)
+  const [credentials, setCredentials] = useState<Credentials>(loadCredentials)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [jevModalOpen, setJevModalOpen] = useState(false)
   const [jevDismissed, setJevDismissed] = useState(false)
@@ -61,6 +80,8 @@ export default function App() {
   const toastTimer = useRef<number | null>(null)
 
   const thinking = analyzing || generating
+  const jevReady = isJevConfigured(credentials)
+  const llmReady = isLlmConfigured(credentials)
 
   const persist = useCallback((next: Message[]) => {
     try {
@@ -88,23 +109,19 @@ export default function App() {
     toastTimer.current = window.setTimeout(() => setToast(null), 2600)
   }, [])
 
-  const refreshState = useCallback(async () => {
-    try {
-      setAppState(await api.getState())
-    } catch {
-      /* 状态刷新失败不阻塞主流程 */
-    }
+  /** 画像（风格/记忆/历史）统一经由这里更新并持久化，ref 保证异步流程拿到最新值 */
+  const commitProfile = useCallback((updater: (current: LocalProfile) => LocalProfile) => {
+    const next = updater(profileRef.current)
+    profileRef.current = next
+    setProfile(next)
+    saveProfile(next)
   }, [])
 
   useEffect(() => {
-    void refreshState()
-  }, [refreshState])
-
-  useEffect(() => {
-    if (appState && !appState.jev.configured && !jevDismissed) {
+    if (!jevReady && !jevDismissed) {
       setJevModalOpen(true)
     }
-  }, [appState, jevDismissed])
+  }, [jevReady, jevDismissed])
 
   const runPipeline = useCallback(
     async (target: Message[], options: { regenerate?: boolean; nextVariant?: number } = {}) => {
@@ -116,19 +133,25 @@ export default function App() {
           setObserveResult(null)
           setReplyData(null)
           setEdits([])
-          const result = await api.analyze(target)
+          const result = await api.analyze(target, profileRequest(profileRef.current))
           setAnalysis(result)
+          commitProfile((current) => applyAnalysisResult(current, result))
           setAnalyzing(false)
         }
         setGenerating(true)
         const nextVariant = options.nextVariant ?? 0
-        const replyResult = await api.reply(target, nextVariant, 3)
+        const replyResult = await api.reply(
+          target,
+          nextVariant,
+          3,
+          profileRequest(profileRef.current),
+        )
         setReplyData(replyResult)
         setEdits(replyResult.replies.map((reply) => reply.content))
         setSelectedReplyIndex(0)
         setVariant(nextVariant)
+        commitProfile((current) => applyAnalysisResult(current, replyResult))
         setGenerating(false)
-        void refreshState()
       } catch (err) {
         setAnalyzing(false)
         setGenerating(false)
@@ -140,7 +163,7 @@ export default function App() {
         }
       }
     },
-    [refreshState],
+    [commitProfile],
   )
 
   const handleSendAsOther = useCallback(
@@ -157,14 +180,14 @@ export default function App() {
       ]
       setMessages(next)
       persist(next)
-      if (appState?.settings.autoAnalyze !== false) {
+      if (profileRef.current.autoAnalyze) {
         void runPipeline(next)
       } else {
         setAnalysis(null)
         setReplyData(null)
       }
     },
-    [appState?.settings.autoAnalyze, messages, persist, runPipeline],
+    [messages, persist, runPipeline],
   )
 
   const handleAnalyze = useCallback(() => {
@@ -183,12 +206,7 @@ export default function App() {
     setSending(true)
     setError(null)
     try {
-      const result = await api.send(
-        messages,
-        text,
-        analysis?.historyId ?? '',
-        simulateDomFailure,
-      )
+      const result = await api.send(messages, text, simulateDomFailure)
       setSendResult(result)
       const next: Message[] = [
         ...messages,
@@ -202,8 +220,9 @@ export default function App() {
       ]
       setMessages(next)
       persist(next)
+      const historyId = analysis?.historyId ?? replyData?.historyId ?? ''
+      commitProfile((current) => attachHistoryReply(current, historyId, text))
       showToast('已通过 JEV 填入输入框并发送 ✓')
-      void refreshState()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -211,10 +230,11 @@ export default function App() {
     }
   }, [
     analysis?.historyId,
+    commitProfile,
     edits,
     messages,
     persist,
-    refreshState,
+    replyData?.historyId,
     replyData?.replies,
     selectedReplyIndex,
     sending,
@@ -233,7 +253,7 @@ export default function App() {
     }
   }, [messages])
 
-  const handleClear = useCallback(async () => {
+  const handleClear = useCallback(() => {
     setMessages([])
     setAnalysis(null)
     setReplyData(null)
@@ -242,13 +262,9 @@ export default function App() {
     setEdits([])
     persist([])
     localStorage.removeItem(STORAGE_KEY)
-    try {
-      await api.resetConversation()
-    } catch {
-      /* ignore */
-    }
+    commitProfile(clearHistory)
     showToast('对话已清空（关系记忆保留）')
-  }, [persist, showToast])
+  }, [commitProfile, persist, showToast])
 
   const handleLoadExample = useCallback(() => {
     setMessages(EXAMPLE_MESSAGES)
@@ -257,41 +273,43 @@ export default function App() {
   }, [persist, runPipeline])
 
   const handleSaveSettings = useCallback(
-    async (patch: Record<string, unknown>) => {
-      await api.updateSettings(patch)
-      await refreshState()
-      showToast('设置已保存')
+    async (payload: SettingsSavePayload) => {
+      const { credentials: nextCredentials, ...profilePatch } = payload
+      if (nextCredentials) {
+        setCredentials(nextCredentials)
+        saveCredentials(nextCredentials)
+      }
+      commitProfile((current) => ({
+        ...current,
+        userCommunicationStyle:
+          profilePatch.userCommunicationStyle ?? current.userCommunicationStyle,
+        otherCommunicationStyle:
+          profilePatch.otherCommunicationStyle ?? current.otherCommunicationStyle,
+        autoAnalyze: profilePatch.autoAnalyze ?? current.autoAnalyze,
+        relationshipMemory: profilePatch.relationshipMemory ?? current.relationshipMemory,
+      }))
+      showToast('设置已保存（仅保存在本机浏览器）')
     },
-    [refreshState, showToast],
+    [commitProfile, showToast],
   )
 
   const handleSaveJev = useCallback(
-    async (jev: { apiKey: string; baseUrl: string; model: string }) => {
-      await api.updateSettings({ jev })
-      await refreshState()
+    async (jev: JevCredentials) => {
+      const next: Credentials = { ...credentials, jev }
+      setCredentials(next)
+      saveCredentials(next)
       setJevModalOpen(false)
       setJevDismissed(true)
-      showToast('JEV 已启用')
-      if (messages.length > 0 && appState?.settings.autoAnalyze !== false) {
+      showToast('JEV 已启用（仅保存在本机浏览器）')
+      if (messages.length > 0 && profileRef.current.autoAnalyze) {
         void runPipeline(messages)
       }
     },
-    [appState?.settings.autoAnalyze, messages, refreshState, runPipeline, showToast],
+    [credentials, messages, runPipeline, showToast],
   )
 
   const timings = replyData?.timings ?? analysis?.timings ?? null
-  const currentAnalysis: AnalyzeResponse | null =
-    analysis ??
-    (replyData
-      ? {
-          emotion: replyData.emotion,
-          strategy: replyData.strategy,
-          risk: replyData.risk,
-          jevModel: replyData.jevModel,
-          timings: replyData.timings,
-          historyId: '',
-        }
-      : null)
+  const currentAnalysis: AnalyzeResponse | null = analysis ?? replyData
 
   return (
     <div className="app">
@@ -305,17 +323,17 @@ export default function App() {
         </div>
         <div className="header-status">
           <button
-            className={`chip chip-btn ${appState?.jev.configured ? 'chip-ok' : 'chip-danger'}`}
+            className={`chip chip-btn ${jevReady ? 'chip-ok' : 'chip-danger'}`}
             onClick={() => {
               setJevDismissed(false)
               setJevModalOpen(true)
             }}
-            title={appState?.jev.configured ? `JEV：${appState.jev.model}` : '点击输入 JEV API Key'}
+            title={jevReady ? `JEV：${credentials.jev.model}` : '点击输入 JEV API Key'}
           >
-            JEV {appState?.jev.configured ? '已连接' : '未配置 · 点击输入 Key'}
+            JEV {jevReady ? '已连接' : '未配置 · 点击输入 Key'}
           </button>
-          <span className={`chip ${appState?.llm.configured ? 'chip-ok' : 'chip-muted'}`}>
-            {appState?.llm.configured ? `LLM ${appState.llm.model}` : 'LLM 未配置 · 本地合成'}
+          <span className={`chip ${llmReady ? 'chip-ok' : 'chip-muted'}`}>
+            {llmReady ? `LLM ${credentials.llm.model}` : 'LLM 未配置 · 本地合成'}
           </span>
         </div>
         <div className="header-actions">
@@ -371,7 +389,7 @@ export default function App() {
             }
             onRegenerate={handleRegenerate}
             onSend={handleSendReply}
-            llmModel={appState?.llm.model ?? null}
+            llmModel={llmReady ? credentials.llm.model : null}
             requiresConfirmation={currentAnalysis?.risk.requiresConfirmation ?? true}
             simulateDomFailure={simulateDomFailure}
             onToggleSimulateDomFailure={setSimulateDomFailure}
@@ -384,7 +402,7 @@ export default function App() {
             canObserve={messages.length > 0}
             timings={timings}
           />
-          {appState && <MemoryPanel memory={appState.memory} history={appState.history} />}
+          <MemoryPanel memory={profile.relationshipMemory} history={profile.history} />
           <p className="stage-note">
             第一阶段（Manual）：AI 只负责分析与建议，JEV 填入输入框后必须由你确认发送。
           </p>
@@ -393,13 +411,15 @@ export default function App() {
 
       <SettingsDrawer
         open={settingsOpen}
-        state={appState}
+        profile={profile}
+        credentials={credentials}
         onClose={() => setSettingsOpen(false)}
         onSave={handleSaveSettings}
       />
 
       <JevSetupModal
         open={jevModalOpen}
+        credentials={credentials}
         onClose={() => {
           setJevModalOpen(false)
           setJevDismissed(true)

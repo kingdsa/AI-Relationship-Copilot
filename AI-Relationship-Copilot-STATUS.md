@@ -12,7 +12,7 @@
 - 两个重要架构事实（与 PRD 假设不同，已按实际情况落地）：
   1. **真实 JEV（TypeSafe System One）是决策模型，不生成文本**。因此 PRD 里"JEV 观察 + AI 思考"→ 实际落地为 **JEV = 决策大脑（choice/score/noul）**，**LLM = 语言表达（可插拔，可选）**。
   2. **PRD 中 "JEV = 浏览器自动化" 在真实 JEV 产品中不存在**。已用 `BrowserAgent` 接口抽象 + `SimulatorBrowserAgent` 模拟实现（把前端聊天框当作聊天页面）；接真实浏览器（Playwright/CDP）只需替换实现。
-- **JEV API Key 必须由用户在网页端手动输入**（本次按你的要求改造完成），服务端只存本机 `server/data/settings.json`、接口只回传打码值。
+- **服务端无状态**：JEV / LLM 凭据随请求头传递；沟通风格、关系记忆、情绪时间线/分析历史随请求体传递。全部数据只存在使用者自己的浏览器 localStorage，服务端不落盘（`server/data` 已废弃），**多人共用同一部署时各用各的 Key、记忆与历史，互不干扰**。
 - 当前状态：开发服务运行中（web :5173 / server :8787），**JEV 未配置（等你手动输入 Key）**。
 
 ---
@@ -27,7 +27,7 @@
 | 后端：Express 4 + TypeScript + tsx（watch） | `server/`、`server/tsconfig.json` |
 | 前端：Vite 6 + React 18 + TS，`/api` 代理到 8787 | `web/vite.config.ts` |
 | 生产模式：后端静态托管 `web/dist`（单端口 8787） | `server/src/index.ts` |
-| 环境变量模板（JEV Key 默认留空） | `server/.env`、`server/.env.example` |
+| 环境变量模板（仅 PORT；密钥改存浏览器 localStorage） | `server/.env.example` |
 | 项目说明 | `README.md` |
 
 ### 1.2 AI 层（ai/）
@@ -57,32 +57,33 @@
 | 模拟实现 | `agent/observer/simulator-agent.ts` | 把前端聊天框当作页面，实现 observe / screenshot / extract / type / click |
 | 截图 | `agent/observer/screenshot.ts` | 生成聊天页面 SVG 截图（data URL），可作为多模态上下文/预览 |
 | 执行器 | `agent/executor/jev-executor.ts` | 定位输入框 → 输入文本 → 定位发送按钮 → 点击；**DOM 失败 → 截图 → 视觉定位兜底**（可演示） |
-| 编排 | `agent/pipeline.ts` | `runAnalysis()`（Emotion+Strategy 并行 JEV 调用、分析缓存 20 条、记忆写入）；`generateReplies()`（复用缓存，重新生成不重复调用 JEV）；`jevStatus()/llmStatus()` |
+| 编排 | `agent/pipeline.ts` | `runAnalysis()`（Emotion+Strategy 并行 JEV 调用、分析缓存按"密钥+画像指纹"隔离、纯计算生成记忆与时间线记录）；`generateReplies()`（复用缓存，重新生成/带合并后画像的 reply 都不再调用 JEV）；按请求凭据即时构建客户端 |
+| 凭据解析 | `ai/credentials.ts` | 从请求头解析每位调用者的 JEV/LLM 凭据（percent-encoded），服务端不落盘 |
+| 画像 | `agent/context/profile.ts` | 校验/补默认值：请求体里的沟通风格 + 关系记忆；`sanitizeProfile()` |
 
-### 1.4 记忆与配置（memory/）
+### 1.4 记忆与配置（原 memory/，现已本地化）
 
 - `memory/store.ts`：JSON 文件存储（原子写入 tmp+rename、内存缓存）。
-- `memory/settings.json`：**JEV 配置（手动输入）**、LLM 配置、双方沟通风格、自动分析开关。
-- `memory/relationship-memory.json`：偏好/常用语/沟通模式/重要事件/雷区/常聊话题。
-- `memory/conversation-history.json`：情绪时间线（最多 1000 条，`/api/state` 返回最近 50 条）。
+- **服务端已无 memory/ 目录**（`store.ts`、`user-profile.ts`、`relationship-memory.ts`、`conversation-history.ts` 均已删除）。
+- 沟通风格 / 关系记忆 / 情绪时间线（最多 1000 条）改由前端 localStorage 持有：
+  - `web/src/profile.ts`：`ai-relationship-copilot.profile.v1`（风格 + 自动分析开关 + 关系记忆 + 时间线）；
+  - 分析/生成回复时随请求体发送 `profile`，服务端合并记忆并返回 `relationshipMemory` / `historyRecord`，前端落盘。
 
 ### 1.5 HTTP API（routes/api.ts）
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/health` | JEV/LLM 配置状态 |
-| GET | `/api/state` | 记忆 + 设置（密钥打码）+ 历史 + 状态 |
-| PUT | `/api/settings` | 保存 JEV Key / LLM / 风格 / 记忆 / 自动分析；支持 `clearJev`、`clearLlm`；空字符串 Key = 不修改 |
+| GET | `/api/health` | 按请求头凭据返回该调用者的 JEV/LLM 配置状态 |
 | POST | `/api/observe` | JEV 页面观察 + 截图 + 消息提取 |
-| POST | `/api/analyze` | 完整分析（未配置 JEV → 409） |
-| POST | `/api/reply` | 生成 1~3 条候选（`variant` 重新生成；未配置 JEV → 409） |
+| POST | `/api/analyze` | 完整分析（body 带 `profile`；未配置 JEV → 409）；返回 `relationshipMemory` + `historyRecord` |
+| POST | `/api/reply` | 生成 1~3 条候选（`variant` 重新生成；未配置 JEV → 409）；同样返回记忆与记录 |
 | POST | `/api/send` | JEV 执行填入+发送，返回步骤日志+截图；支持 `simulateDomFailure` |
-| POST | `/api/reset-conversation` | 清空分析历史（关系记忆保留） |
-| POST | `/api/memory` | 单独更新关系记忆 |
+
+`/api/state`、`/api/settings`、`/api/memory`、`/api/reset-conversation` 已删除（数据在前端 localStorage，无需服务端接口）。异步路由统一经 `handle()` 包装，上游失败返回 500 JSON 而不是让进程退出。
 
 ### 1.6 前端（web/）
 
-- `App.tsx`：全局状态与流水线编排（她发言 → 自动分析 → 生成回复；编辑/重新生成/发送；localStorage 持久化，含容量降级）。
+- `App.tsx`：全局状态与流水线编排（她发言 → 自动分析 → 生成回复；编辑/重新生成/发送）；画像经 `profile.ts` 统一读写 localStorage（含容量降级）。
 - 组件：
   - `ChatWindow` + `MessageBubble`：模拟聊天框（她=左、我/JEV 发送=右），图片附件、回车发送、"是她说的"提示、思考动画；
   - `AnalysisPanel`：情绪 emoji + 置信度 + 强度条 + 态度/诉求/关系状态/紧急度 + 概率分布 + 策略该做/不该做 + 风险卡片；
@@ -93,13 +94,15 @@
   - `JevSetupModal`：**首次未配置 JEV 时自动弹出**，要求手动粘贴 API Key（Base URL / 模型可改，含清除）。
 - `styles.css`：完整主题（卡片/气泡/抽屉/弹窗/响应式）。
 
-### 1.7 JEV Key 手动输入改造（本轮要求）
+### 1.7 数据本地化改造（多人共用支持，本轮要求）
 
-1. `server/.env` 中 JEV Key 已清空（环境变量仅作可选回退）。
-2. Key 只能通过 UI 输入：首次自动弹窗 / 头部状态胶囊 / 设置面板；保存到 `server/data/settings.json`。
-3. `GET /api/state`、`/api/health` 只返回 `apiKey: '••••••••'` 与 `configured` 状态。
-4. 未配置时 `/api/analyze`、`/api/reply` 返回 **409**，前端自动唤起配置弹窗。
-5. 实测流程：未配置 → 409 提示 ✅；手动输入 Key → 分析成功（`jev-1.13.0`）✅；「清除 JEV 配置」→ 回到未配置 ✅。
+1. 凭据（JEV/LLM 的 apiKey / baseUrl / model / vision）存浏览器 `localStorage`（`ai-relationship-copilot.credentials.v1`），随请求头 `X-Jev-*` / `X-Llm-*` 发送（percent-encoded）。
+2. 服务端 `ai/credentials.ts` 按请求解析凭据，`pipeline.ts` 即时构建 JevClient / LlmClient；`config.ts` 移除 `jevFromEnv` / `llmFromEnv`，`.env` 不再读取密钥。
+3. 画像（双方风格 / 自动分析开关 / 关系记忆 / 情绪时间线）存 `ai-relationship-copilot.profile.v1`，随 `/analyze`、`/reply` 请求体的 `profile` 字段发送；服务端只做校验、合并与返回，不落盘。
+4. 服务端删除 `memory/`（4 个文件）与 `dataDir` 配置；`server/data` 不再被读写。
+5. 分析缓存签名 = 密钥指纹 + 画像指纹；同一份分析同时登记"请求前画像"和"记忆合并后画像"两个签名，因此 analyze 之后的 reply / regenerate 依然命中缓存（不再重复消耗 JEV）。
+6. 未配置（无凭据请求头）时 `/api/analyze`、`/api/reply` 返回 **409**，前端自动唤起配置弹窗。
+7. 实测：无凭据 → 409 ✅；用户 A（key-A/jev-A）与用户 B（key-B/jev-B）各自请求，mock JEV 记录到的 `Authorization` / `model` 分别为各自的值 ✅；LLM 同理 ✅；A 的 analyze→reply→regenerate 只消耗 2 次 JEV，B 用不同 key/画像重新分析（缓存不串）✅（见 1.9）。
 
 ### 1.8 本次修复的问题
 
@@ -108,6 +111,7 @@
 - 合成器文案：care 策略主句改口语化，避免"安慰+吃饭"式语义冲突。
 - localStorage 图片过大降级保存（仅保留描述）。
 - 回复器 `vision` 与 LLM `response_format` 的兼容降级，避免个别网关 400。
+- Express 4 不捕获 async 路由抛错（JEV 上游失败会导致整个进程退出）：路由统一 `handle()` 包装转发错误中间件，现在返回 500 JSON 且进程存活。
 
 ### 1.9 验证记录（实测）
 
@@ -122,6 +126,10 @@
 | `/api/send`（含 DOM 失败 → 截图 → 视觉定位兜底） | ✅ 步骤日志完整 |
 | 图片附件（data URL）随消息进入上下文 | ✅ 截图/记忆流程正常 |
 | 关系记忆自动抽取 | ✅ 如"可颂""草莓蛋糕"进入偏好 |
+| 多用户凭据隔离（mock JEV/LLM） | ✅ A/B 两用户请求头不同 → 上游各自收到 `Bearer key-A/jev-A`、`Bearer key-B/jev-B`；LLM 各自 Key 生效 |
+| 画像/记忆/时间线本地化 | ✅ analyze 返回 `relationshipMemory`（合并"可颂"）+ `historyRecord`；服务端无写入，`server/data` 三个 json md5 不变 |
+| analyze→reply→regenerate 的 JEV 缓存 | ✅ 首次 analyze 消耗 2 次 JEV；带合并后画像的 reply 与 regenerate 各 0 次；换成 key-B/不同画像则重新分析（缓存不串） |
+| JEV 上游失败（错误 Base URL） | ✅ 返回 500 JSON，健康检查仍 200（进程不退出） |
 
 ---
 
@@ -178,9 +186,9 @@
 1. **JEV 置信度波动**：对话过短时 `context_sufficient` 会压低 confidence（这是预期行为），但短消息场景建议多补两条上下文。
 2. **本地合成器文案上限有限**：无 LLM Key 时回复偏模板化；配置 LLM 后质量显著提升（推荐 DeepSeek/Qwen/GPT）。
 3. **正则记忆抽取有噪声**：例如"别人骗我/骗我"可能并存；后续可加归一化或 LLM 归纳。
-4. **API Key 明文存储**：本机 `server/data/settings.json`（已 gitignore），未做加密/系统钥匙串（keytar）。
-5. **对话记录只在前端 localStorage**（服务端仅存分析历史）；清浏览器缓存会丢对话，关系记忆/历史保留。
-6. **分析缓存**为内存数组（最多 20 条），重启即失效；无持久化。
+4. **凭据存浏览器 localStorage（明文）**：不随部署共享，但同浏览器/同设备可被读取；如需更强保护可后续接系统钥匙串或服务端加密（当前多人共用已互不影响）。
+5. **所有数据只在前端 localStorage**（对话、凭据、画像/记忆/历史）；清浏览器缓存或换浏览器会丢，服务端无备份。
+6. **分析缓存**为内存数组（最多 40 条、按密钥+画像指纹），重启即失效；无持久化。
 7. **无自动化测试**：无单测/E2E；目前依赖 typecheck + 手工 curl 验证。
 8. **LLM 多模态路径未实测**（缺多模态 Key）。
 9. **未接真实浏览器自动化**：PRD 假设 JEV 负责浏览器操作，实际需自建（Playwright/CDP）。
@@ -210,8 +218,8 @@
 
 ### P2 — 第二阶段能力（长期记忆增强）
 
-6. **说话风格自动学习**：统计用户消息长度/表情/口头禅 → 更新 `userCommunicationStyle`（`memory/user-profile.ts`）。
-7. **回复效果反馈闭环**：发送后让用户标记"有效/无效"，记录到 `conversation-history.json`，用于修正策略权重（`pipeline.ts` + `ReplyPanel`）。
+6. **说话风格自动学习**：统计用户消息长度/表情/口头禅 → 更新 `userCommunicationStyle`（`web/src/profile.ts`）。
+7. **回复效果反馈闭环**：发送后让用户标记"有效/无效"，记录到前端画像的时间线（`web/src/profile.ts`），用于修正策略权重（`pipeline.ts` + `ReplyPanel`）。
 8. **记忆归纳升级**：用 LLM 对近 N 条对话做摘要/实体抽取，替代纯正则（`memory-builder.ts`）。
 
 ### P3 — Auto 模式
@@ -229,6 +237,7 @@
 改风险规则      → server/src/agent/strategy/risk-control.ts
 改前端流程/UI   → web/src/App.tsx、web/src/components/*、web/src/styles.css
 改接口          → server/src/routes/api.ts
+改凭据/画像存储 → web/src/credentials.ts、web/src/profile.ts
 ```
 
 ---
@@ -243,27 +252,27 @@ npm run build && npm start   # 生产模式，单端口 8787
 ```
 
 ```bash
-# 健康检查 / 配置状态
+# 健康检查（不带凭据 → 未配置）
 curl -s localhost:8787/api/health
 
-# 分析（未配置 JEV 会返回 409）
+# 带自己的凭据与画像（等价于前端从 localStorage 发出的请求）
 curl -s -X POST localhost:8787/api/analyze -H 'Content-Type: application/json' \
-  -d '{"messages":[{"id":"1","role":"other","content":"没怎么","timestamp":1789000240000}]}'
-
-# 手动写入 JEV Key（等价于界面输入）
-curl -s -X PUT localhost:8787/api/settings -H 'Content-Type: application/json' \
-  -d '{"jev":{"apiKey":"apikey_xxx","baseUrl":"https://api.typesafe.ai/v1","model":"jev-latest"}}'
+  -H 'X-Jev-Api-Key: apikey_xxx' \
+  -H 'X-Jev-Base-Url: https%3A%2F%2Fapi.typesafe.ai%2Fv1' \
+  -H 'X-Jev-Model: jev-latest' \
+  -d '{"messages":[{"id":"1","role":"other","content":"没怎么","timestamp":1789000240000}],
+       "profile":{"relationshipMemory":{"otherName":"她","preferences":[],"commonPhrases":[],"communicationPatterns":[],"importantEvents":[],"knownTriggers":[],"favoriteTopics":[],"updatedAt":1}}}'
 ```
 
-数据文件（均已 gitignore）：`server/data/settings.json`、`relationship-memory.json`、`conversation-history.json`；
-浏览器端对话缓存：localStorage `ai-relationship-copilot.messages.v1`。
+服务端无数据文件（`server/data` 已废弃，可删除）；浏览器端存储：
+对话 `ai-relationship-copilot.messages.v1`、凭据 `ai-relationship-copilot.credentials.v1`、画像/记忆/时间线 `ai-relationship-copilot.profile.v1`。
 
 ---
 
 ## 6. 关键设计决策记录（ADR 摘要）
 
 1. **JEV 只做决策，不做文本**：用两次并行 JEV 调用（Emotion 组问题 / Strategy+Risk 组问题）替代"一次返回全部 JSON"，再由代码组装成 PRD §19 结构；回复文本交给 LLM（可插拔）。
-2. **分析缓存按对话指纹**（条数 + 最后一条），重新生成/连续操作不重复消耗 JEV，设置变更即失效。
+2. **分析缓存按"密钥指纹 + 画像指纹 + 对话指纹"**（SHA-256 前 16 位 + 条数 + 最后一条）；同一份分析同时登记"请求前画像"与"记忆合并后画像"两个签名，保证 analyze 后的 reply / regenerate 命中缓存，不同使用者不会互相命中。
 3. **BrowserAgent 抽象先行为主**：即使当前是模拟实现，也让未来接真实浏览器零重构。
-4. **Key 输入收敛到设置面板**：不写死在代码/环境变量；服务端打码、前端不回显、支持清除。
+4. **数据归使用者浏览器所有**：凭据走请求头、画像走请求体，服务端完全无状态、不落盘、不读密钥环境变量，多人共用各用各的。
 5. **风险控制优先级高于自动化**：`confidence < 0.7` 或命中敏感话题时只给建议 + 明确提示，第一阶段一律人工确认。

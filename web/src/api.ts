@@ -1,6 +1,7 @@
+import { credentialHeaders } from './credentials'
+import type { ProfileRequest } from './profile'
 import type {
   AnalyzeResponse,
-  AppStateResponse,
   Message,
   ObserveResponse,
   ReplyResponse,
@@ -9,8 +10,12 @@ import type {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
-    headers: { 'Content-Type': 'application/json' },
     ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...credentialHeaders(),
+      ...(init?.headers as Record<string, string> | undefined),
+    },
   })
   if (!res.ok) {
     const body = await res.text().catch(() => '')
@@ -20,24 +25,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  getState: () => request<AppStateResponse>('/state'),
-
-  analyze: (messages: Message[]) =>
+  analyze: (messages: Message[], profile: ProfileRequest) =>
     request<AnalyzeResponse>('/analyze', {
       method: 'POST',
-      body: JSON.stringify({ messages }),
+      body: JSON.stringify({ messages, profile }),
     }),
 
-  reply: (messages: Message[], variant: number, count = 3) =>
+  reply: (messages: Message[], variant: number, count: number, profile: ProfileRequest) =>
     request<ReplyResponse>('/reply', {
       method: 'POST',
-      body: JSON.stringify({ messages, variant, count }),
+      body: JSON.stringify({ messages, variant, count, profile }),
     }),
 
-  send: (messages: Message[], text: string, historyId: string, simulateDomFailure: boolean) =>
+  send: (messages: Message[], text: string, simulateDomFailure: boolean) =>
     request<SendResponse>('/send', {
       method: 'POST',
-      body: JSON.stringify({ messages, text, historyId, simulateDomFailure }),
+      body: JSON.stringify({ messages, text, simulateDomFailure }),
     }),
 
   observe: (messages: Message[]) =>
@@ -45,13 +48,4 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ messages }),
     }),
-
-  updateSettings: (patch: Record<string, unknown>) =>
-    request<{ ok: boolean }>('/settings', {
-      method: 'PUT',
-      body: JSON.stringify(patch),
-    }),
-
-  resetConversation: () =>
-    request<{ ok: boolean }>('/reset-conversation', { method: 'POST' }),
 }

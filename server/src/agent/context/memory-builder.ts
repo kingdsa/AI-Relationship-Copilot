@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { conversationHistory } from '../../memory/conversation-history.js'
-import { relationshipMemory } from '../../memory/relationship-memory.js'
+import type { RelationshipMemory } from '../../types/index.js'
 import type { EmotionAnalysis } from '../../types/emotion.js'
 import type { HistoryRecord } from '../../types/index.js'
 
@@ -50,11 +49,13 @@ function extract(patternList: RegExp[], text: string, prefix: string): string[] 
   return found
 }
 
-export function extractMemoryCandidates(text: string): {
+export interface MemoryCandidates {
   preferences: string[]
   knownTriggers: string[]
   importantEvents: string[]
-} {
+}
+
+export function extractMemoryCandidates(text: string): MemoryCandidates {
   return {
     preferences: extract(PREFERENCE_PATTERNS, text, ''),
     knownTriggers: extract(TRIGGER_PATTERNS, text, ''),
@@ -64,17 +65,39 @@ export function extractMemoryCandidates(text: string): {
   }
 }
 
+function mergeUnique(base: string[], incoming: string[], limit = 50): string[] {
+  const set = new Set(base.map((s) => s.trim()).filter(Boolean))
+  for (const item of incoming) {
+    const value = item.trim()
+    if (value) set.add(value)
+  }
+  return Array.from(set).slice(-limit)
+}
+
+export function mergeIntoMemory(
+  memory: RelationshipMemory,
+  candidates: MemoryCandidates,
+): RelationshipMemory {
+  return {
+    ...memory,
+    preferences: mergeUnique(memory.preferences, candidates.preferences),
+    knownTriggers: mergeUnique(memory.knownTriggers, candidates.knownTriggers),
+    importantEvents: mergeUnique(memory.importantEvents, candidates.importantEvents),
+    updatedAt: Date.now(),
+  }
+}
+
 /**
- * Memory Builder（PRD §17）：
- * 从最新消息里抽取可复用的关系记忆，并写入情绪时间线。
- * 注意：历史模式只作为参考，不当作绝对规则。
+ * Memory Builder（PRD §17）：从最新消息里抽取可复用的关系记忆，
+ * 并生成一条情绪时间线记录。这里只做纯计算，持久化由前端 localStorage 完成。
  */
-export async function recordAnalysis(params: {
+export function buildHistoryRecord(params: {
   incoming: string
   /** 用于抽取记忆的文本（默认取 incoming，可传入最近几条她的消息） */
   memoryText?: string
   emotion: EmotionAnalysis
-}): Promise<HistoryRecord> {
+  memory: RelationshipMemory
+}): { record: HistoryRecord; memory: RelationshipMemory } {
   const record: HistoryRecord = {
     id: randomUUID(),
     at: Date.now(),
@@ -85,16 +108,9 @@ export async function recordAnalysis(params: {
     relationshipState: params.emotion.relationshipState,
     urgency: params.emotion.urgency,
   }
-  await conversationHistory.add(record)
 
   const candidates = extractMemoryCandidates(params.memoryText || params.incoming)
-  if (
-    candidates.preferences.length > 0 ||
-    candidates.knownTriggers.length > 0 ||
-    candidates.importantEvents.length > 0
-  ) {
-    await relationshipMemory.update(candidates)
-  }
+  const memory = mergeIntoMemory(params.memory, candidates)
 
-  return record
+  return { record, memory }
 }
